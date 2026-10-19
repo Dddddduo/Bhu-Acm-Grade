@@ -35,7 +35,7 @@ jobs:
           node scripts/fetchStats.js
         env:
           # 牛客如果将来要密钥,在这里配 Secrets 并透传
-          NOWCODER_TOKEN: *** secrets.NOWCODER_TOKEN }}
+          ${{ secrets.NOWCODER_TOKEN }}
 
       - name: 把新数据提交回仓库
         run: |
