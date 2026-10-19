@@ -205,9 +205,6 @@ tbody tr:hover .sticky-col { background: var(--accent-soft); }
 .col-links a { margin-right: 10px; font-size: 13px; }
 .no-data { text-align: center; color: var(--muted); padding: 40px 0; }
 
-/* 屏幕不够宽时先收掉次要列(12 列全开需要约 1400px),
-   保证表格里不出现横向滚动;再窄(<760)整表换成卡片视图(见 MobileCards) */
-@media (max-width: 1340px) {
-  .hide-m { display: none; }
-}
+/* 列全部常显(全量数据);窗口不够宽时靠 .table-wrap 横向滚动兜底,
+   再窄(<760)整表换成卡片视图(见 MobileCards) */
 </style>
