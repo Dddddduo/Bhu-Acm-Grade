@@ -30,12 +30,10 @@ jobs:
         with:
           node-version: 20
 
+      # 牛客目前走公开页面抓取,不需要密钥;以后要配 Secrets 再加 env 块
       - name: 抓取最新成绩
         run: |
           node scripts/fetchStats.js
-        env:
-          # 牛客如果将来要密钥,在这里配 Secrets 并透传
-          ${{ secrets.NOWCODER_TOKEN }}
 
       - name: 把新数据提交回仓库
         run: |
