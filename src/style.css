@@ -1,0 +1,50 @@
+:root {
+  --bg: #eef1f8;
+  --card: #ffffff;
+  --text: #1c2233;
+  --muted: #8189a0;
+  --line: #e7eaf3;
+  --accent: #3b6cff;
+  --accent-soft: #eef3ff;
+  --green: #12a150;
+  --green-soft: #e6f7ee;
+  --shadow: 0 2px 12px rgba(28, 42, 90, 0.08);
+
+  /* Codeforces 官方段位配色:<1200灰 1200绿(Pupil) 1400青(Spec) 1600蓝(Expert)
+     1900紫(CM) 2100橙(Master/IM) 2400红(GM/IGM) ≥3000黑红(LGM) */
+  --cf-newbie: #8c8c8c;
+  --cf-pupil: #00a000;
+  --cf-specialist: #00a8c0;
+  --cf-expert: #2f6bff;
+  --cf-cm: #a020f0;
+  --cf-master: #e69500;
+  --cf-im: #e69500;
+  --cf-gm: #d02020;
+  --cf-lgm: #a00b0b;
+
+  /* 牛客官方 Rating 配色:0~699灰 700~1099紫 1100~1499蓝 1500~1999青
+     2000~2399黄 2400~2799橙 ≥2800红(和 CF 不是一套,别混用) */
+  --nc-gray: #8c8c8c;
+  --nc-purple: #8250df;
+  --nc-blue: #2f6bff;
+  --nc-cyan: #00a8c0;
+  --nc-yellow: #c08c00;
+  --nc-orange: #e07b00;
+  --nc-red: #d02020;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+button { font: inherit; cursor: pointer; }
+input, select { font: inherit; }

@@ -1,0 +1,55 @@
+# 每 5 分钟自动刷新成绩并部署到 GitHub Pages
+name: refresh-and-deploy
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # 每 5 分钟一次
+  workflow_dispatch: {}      # 允许在 Actions 页面手动点"Run"立即刷新
+  push:
+    branches: [main]
+    paths:
+      - 'public/data/members.json'  # 改名单后自动重新部署(数据不重抓)
+
+# 同一时刻只允许一个刷新在跑:上一轮没跑完时,本轮排队等它结束,
+# 而不是并发抓取(并发会撞 CF 限速、也会让 Pages 部署互相打架)
+concurrency:
+  group: refresh-deploy
+  cancel-in-progress: false
+
+jobs:
+  refresh-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # 需要把新的 stats.json 提交回仓库
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 抓取最新成绩
+        run: |
+          node scripts/fetchStats.js
+        env:
+          # 牛客如果将来要密钥,在这里配 Secrets 并透传
+          NOWCODER_TOKEN: *** secrets.NOWCODER_TOKEN }}
+
+      - name: 把新数据提交回仓库
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/data/stats.json
+          git diff --cached --quiet || git commit -m "chore: 自动刷新成绩数据"
+          git push
+
+      - run: npm install
+      - run: npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - uses: actions/deploy-pages@v4
