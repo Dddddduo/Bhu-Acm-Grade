@@ -1,0 +1,47 @@
+# 只做两件事:打包网站 -> 发布到 GitHub Pages(不再抓取三方数据)
+# 数据刷新已改为浏览器端定时直连 Codeforces 官方 API(见 src/liveCf.js)
+# 牛客快照需要更新时:本地 npm run refresh 后 push,本流程会自动重新构建发布
+name: build-and-deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:        # 本流程自己提交 dist/ 时不要再触发,避免空转
+      - 'dist/**'
+  workflow_dispatch: {}  # 也允许在 Actions 页面手动点 Run
+
+concurrency:
+  group: build-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # 把 dist/ 提交回仓库
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm install
+      - run: npm run build
+
+      # 打包产物入库:dist/ 保留在代码仓库里
+      - name: 把 dist 提交回仓库
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dist
+          git diff --cached --quiet || git commit -m "chore: 打包产物 dist"
+          git push
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - uses: actions/deploy-pages@v4

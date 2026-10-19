@@ -1,10 +1,15 @@
 <script setup>
-// 主页面:加载 members.json + stats.json,搜索/筛选/排序 + 今日概览
+// 主页面:加载 members.json + stats.json(仓库快照),
+// 再在浏览器里定时直连 Codeforces 官方 API 刷新 CF 数据(不落盘,只更内存数组)。
+// 牛客不允许浏览器跨域抓取,以仓库快照为准(维护者本地 npm run refresh 后 push)。
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import RankTable from './components/RankTable.vue'
 import MobileCards from './components/MobileCards.vue'
 import { COLUMNS } from './columns.js'
 import { weightedScore, rowValue, WEIGHTS, RATING_UNIT, SOLVED_UNIT } from './score.js'
+import { fetchCfLive } from './liveCf.js'
+
+const LIVE_EVERY_MS = 3 * 60 * 1000 // 页面打开后每 3 分钟自动拉一轮
 
 // 规则说明里的权重条
 const RULE_LIST = [
@@ -18,6 +23,12 @@ const members = ref([])
 const stats = ref({ updated_at: null, users: {} })
 const loading = ref(true)
 const loadError = ref('')
+
+// 浏览器实时抓取的最新值:{ 成员id: 补丁字段 } —— 不落盘,关掉页面就没了
+const livePatch = ref({})
+const liveAt = ref(null) // 最近一次实时抓取完成时间
+const liveBusy = ref(false) // 正在抓取
+const liveError = ref('') // 最近一次抓取失败原因(成功则清空)
 
 const search = ref('')
 const clazzFilter = ref('')
@@ -61,11 +72,26 @@ const classes = computed(() =>
 // 当前分组名单
 const groupMembers = computed(() => members.value.filter((m) => m.group === group.value))
 
-// 名单 + 成绩合并(当前分组);score = 综合得分(牛客Rating20%+刷题10%,CF Rating40%+刷题30%)
+// 名单 + 成绩合并:仓库快照打底,浏览器实时抓到的字段(livePatch)覆盖同名项
+// score = 综合得分(牛客Rating20%+刷题10%,CF Rating40%+刷题30%)
+// "今日"列按日期口径显示:cf_date / nc_date 不是今天的,当没数据(—),
+// 绝不把昨天的数字挂成今天的(宁缺勿假)
+function bjDate() {
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+}
 const joined = computed(() => {
   const users = stats.value.users || {}
+  const live = livePatch.value
+  const todayStr = bjDate()
   return groupMembers.value.map((m) => {
-    const st = users[String(m.id)] || null
+    const id = String(m.id)
+    const snap = users[id]
+    const patch = live[id]
+    let st = patch ? { ...(snap || {}), ...patch } : snap || null
+    if (st) {
+      if (st.cf_date !== todayStr && 'cf_today' in st) st = { ...st, cf_today: null }
+      if (st.nc_date !== todayStr && 'nc_today' in st) st = { ...st, nc_today: null }
+    }
     return { member: m, stats: st, score: weightedScore(st, m.group) }
   })
 })
@@ -126,6 +152,40 @@ async function loadJson(path) {
   return res.json()
 }
 
+// ---------- 浏览器端定时抓取 ----------
+// CF 官方 API 允许跨域(实测 access-control-allow-origin: *)-> 直连,
+// 拿到就覆盖快照;任何一个人抓失败就跳过,保留旧值,绝不清空。
+let liveTimer = null
+function onVisible() {
+  // 从别的标签页切回来,如果距上次抓取已超过一个周期,立刻补一轮
+  if (document.visibilityState !== 'visible') return
+  const last = liveAt.value ? new Date(liveAt.value.replace(' ', 'T')).getTime() : 0
+  if (Date.now() - last > LIVE_EVERY_MS) refreshLive()
+}
+async function refreshLive() {
+  if (liveBusy.value || !members.value.length) return
+  liveBusy.value = true
+  liveError.value = ''
+  try {
+    // fetchCfLive 内部已逐人兜底:单个人失败只是不进补丁(继续显示快照值),
+    // 整体失败(断网/CF 挂了)才抛到这里 -> 全员保留快照,页面标一下失败原因
+    const cf = await fetchCfLive(members.value)
+    const patch = { ...livePatch.value }
+    for (const [id, rec] of Object.entries(cf)) {
+      patch[id] = { ...(patch[id] || {}), ...rec }
+    }
+    livePatch.value = patch
+    if (Object.keys(cf).length) {
+      liveAt.value = new Date().toLocaleString('zh-CN', { hour12: false })
+    }
+  } catch (e) {
+    liveError.value = 'CF 实时获取失败'
+    console.warn('[live] CF:', e)
+  } finally {
+    liveBusy.value = false
+  }
+}
+
 onMounted(async () => {
   try {
     const [ms, st] = await Promise.all([
@@ -139,11 +199,24 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+  // 定时任务在这里:打开页面就刷一轮 CF,之后每 3 分钟一轮(页面隐藏时暂停,回来补刷)
+  refreshLive()
+  liveTimer = setInterval(onVisible, 60 * 1000) // 每分钟看一眼是否超期
+  document.addEventListener('visibilitychange', onVisible)
+})
+onUnmounted(() => {
+  clearInterval(liveTimer)
+  document.removeEventListener('visibilitychange', onVisible)
 })
 
-const updatedText = computed(() =>
-  stats.value.updated_at ? `数据更新于 ${stats.value.updated_at}` : '尚未采集数据'
-)
+const updatedText = computed(() => {
+  const snap = stats.value.updated_at ? `快照 ${stats.value.updated_at}` : '尚无快照'
+  let live = ''
+  if (liveBusy.value) live = ' · 实时抓取中…'
+  else if (liveAt.value) live = ` · CF 实时 ${liveAt.value}`
+  else if (liveError.value) live = ` · ${liveError.value}(显示快照)`
+  return snap + live
+})
 </script>
 
 <template>
@@ -262,7 +335,7 @@ const updatedText = computed(() =>
     </main>
 
     <footer class="foot">
-      成绩定期从 Codeforces / 牛客 官方 API 抓取 ·
+      CF 成绩打开页面即实时抓取 · 牛客成绩以仓库快照为准 ·
       名单维护:编辑 <code>public/data/members.json</code>
     </footer>
   </div>

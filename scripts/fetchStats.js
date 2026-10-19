@@ -34,11 +34,10 @@ function readOldStats() {
   }
 }
 function mergeInto(oldRec, newRec, todayStr) {
-  const base = { ...oldRec }
-  // "今日"有时效:昨天的今日数不能留到今天
-  if (base.cf_today != null && base.cf_date !== todayStr) delete base.cf_today
-  if (base.nc_today != null && base.nc_date !== todayStr) delete base.nc_today
-  return { ...base, ...newRec }
+  // 直接以旧记录为底、新值覆盖:CF 今日数由浏览器实时抓取(liveCf.js)维护,
+  // 快照这里抓不到 CF 时**不能删**,否则会把浏览器刚同步的旧值也拖没了。
+  // 过期的今日数不主动清理:浏览器每次抓取都会写入 cf_date/cf_today 覆盖掉。
+  return { ...oldRec, ...newRec }
 }
 
 const API = 'https://codeforces.com/api'

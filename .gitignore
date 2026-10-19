@@ -1,4 +1,4 @@
 node_modules/
-dist/
+# dist 要留在仓库里(Action 打包后提交),不再忽略
 .DS_Store
 *.log
