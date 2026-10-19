@@ -27,7 +27,10 @@ const loadError = ref('')
 
 // 浏览器实时抓取的最新值:{ 成员id: 补丁字段 } —— 不落盘,关掉页面就没了
 const livePatch = ref({})
-const liveAt = ref(null) // 最近一次实时抓取完成时间
+// 最近一次实时抓取完成时间:**数字时间戳(Date.now())**
+// 曾有坑:这里存 toLocaleString 字符串,Chrome 中文下是 "2026/10/19 21:16:30",
+// replace(' ','T') 后 new Date() 解析成 NaN -> 超期判断永远 false -> 页面再也不自动刷
+const liveAt = ref(0)
 const liveBusy = ref(false) // 正在抓取
 const liveError = ref('') // 最近一次抓取失败原因(成功则清空)
 
@@ -165,8 +168,7 @@ let liveTimer = null
 function onVisible() {
   // 从别的标签页切回来,如果距上次抓取已超过一个周期,立刻补一轮
   if (document.visibilityState !== 'visible') return
-  const last = liveAt.value ? new Date(liveAt.value.replace(' ', 'T')).getTime() : 0
-  if (Date.now() - last > LIVE_EVERY_MS) refreshLive()
+  if (Date.now() - liveAt.value > LIVE_EVERY_MS) refreshLive()
 }
 async function refreshLive() {
   if (liveBusy.value || !members.value.length) return
@@ -199,7 +201,7 @@ async function refreshLive() {
     }
     livePatch.value = patch
     if (Object.keys(cf).length || Object.keys(nc).length) {
-      liveAt.value = new Date().toLocaleString('zh-CN', { hour12: false })
+      liveAt.value = Date.now()
     }
     logLive(cf, nc)
   } catch (e) {
@@ -264,7 +266,8 @@ const updatedText = computed(() => {
   const snap = stats.value.updated_at ? `快照 ${stats.value.updated_at}` : '尚无快照'
   let live = ''
   if (liveBusy.value) live = ' · 实时抓取中…'
-  else if (liveAt.value) live = ` · 实时 ${liveAt.value}`
+  else if (liveAt.value)
+    live = ` · 实时 ${new Date(liveAt.value).toLocaleString('zh-CN', { hour12: false })}`
   else if (liveError.value) live = ` · ${liveError.value}(显示快照)`
   return snap + live
 })

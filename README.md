@@ -28,8 +28,13 @@ src/                       ← Vue 3 + Vite 前端,只读上面两个 JSON
 ```bash
 npm install
 npm run refresh   # 抓一次成绩(需联网)
+npm run proxy     # 本地牛客代理(浏览器端实时刷牛客数据需要它,另开一个终端)
 npm run dev       # http://localhost:5173
 ```
+
+> 牛客挂着阿里云 WAF,浏览器直连批量抓取会被弹验证页导致 CORS 失败,
+> 所以前端每 5 分钟的牛客实时数据走 `npm run proxy`(scripts/ncProxy.js,
+> Node 侧串行节流+缓存)。代理没开时前端自动回落仓库快照,线上不受影响。
 
 **部署**:仓库 Settings → Pages → Source 选 "GitHub Actions",push 后 Actions 每天自动刷新成绩并部署。
 
