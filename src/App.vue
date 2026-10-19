@@ -9,7 +9,7 @@ import { COLUMNS } from './columns.js'
 import { weightedScore, rowValue, WEIGHTS, RATING_UNIT, SOLVED_UNIT } from './score.js'
 import { fetchCfLive } from './liveCf.js'
 
-const LIVE_EVERY_MS = 3 * 60 * 1000 // 页面打开后每 3 分钟自动拉一轮
+const LIVE_EVERY_MS = 5 * 60 * 1000 // 每 5 分钟一轮:重读快照 + 实时抓 CF
 
 // 规则说明里的权重条
 const RULE_LIST = [
@@ -152,9 +152,12 @@ async function loadJson(path) {
   return res.json()
 }
 
-// ---------- 浏览器端定时抓取 ----------
-// CF 官方 API 允许跨域(实测 access-control-allow-origin: *)-> 直连,
-// 拿到就覆盖快照;任何一个人抓失败就跳过,保留旧值,绝不清空。
+// ---------- 浏览器端定时抓取(约每 5 分钟一轮) ----------
+// 一轮干两件事:
+//  1) 重读仓库快照 stats.json -> 牛客数据 / CF 总做题也跟着换新(维护者 push 后
+//     开着的页面最多 5 分钟就更新,不用手动刷新浏览器)
+//  2) CF 官方 API 允许跨域(实测 access-control-allow-origin: *)-> 直连实时抓,
+//     拿到就覆盖快照;任何一个人抓失败就跳过,保留旧值,绝不清空。
 let liveTimer = null
 function onVisible() {
   // 从别的标签页切回来,如果距上次抓取已超过一个周期,立刻补一轮
@@ -167,8 +170,10 @@ async function refreshLive() {
   liveBusy.value = true
   liveError.value = ''
   try {
-    // fetchCfLive 内部已逐人兜底:单个人失败只是不进补丁(继续显示快照值),
-    // 整体失败(断网/CF 挂了)才抛到这里 -> 全员保留快照,页面标一下失败原因
+    // 先重读仓库快照:维护者 push 新 stats.json 后,开着的页面不用刷新,
+    // 牛客数据和 CF 总做题最多 5 分钟也会跟着换新
+    const st = await loadJson('data/stats.json').catch(() => null)
+    if (st && st.users) stats.value = st
     const cf = await fetchCfLive(members.value)
     const patch = { ...livePatch.value }
     for (const [id, rec] of Object.entries(cf)) {
@@ -199,7 +204,8 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-  // 定时任务在这里:打开页面就刷一轮 CF,之后每 3 分钟一轮(页面隐藏时暂停,回来补刷)
+  // 定时任务在这里:打开页面就刷一轮(快照+CF),之后约每 5 分钟一轮
+  // (页面隐藏时不发请求,切回来发现超期立刻补刷)
   refreshLive()
   liveTimer = setInterval(onVisible, 60 * 1000) // 每分钟看一眼是否超期
   document.addEventListener('visibilitychange', onVisible)
@@ -335,7 +341,7 @@ const updatedText = computed(() => {
     </main>
 
     <footer class="foot">
-      CF 成绩打开页面即实时抓取 · 牛客成绩以仓库快照为准 ·
+      数据约每 5 分钟自动刷新:CF 实时抓取 · 牛客读仓库快照 ·
       名单维护:编辑 <code>public/data/members.json</code>
     </footer>
   </div>
