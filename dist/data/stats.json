@@ -338,7 +338,11 @@
       "nc_submits": 1896,
       "nc_30d": 2,
       "nc_today": 0,
-      "nc_date": "2026-10-19"
+      "nc_date": "2026-10-19",
+      "cf_total": 575,
+      "cf_today": 0,
+      "cf_30d": 0,
+      "cf_date": "2026-10-19"
     },
     "22": {
       "cf_rating": 1219,
@@ -368,7 +372,11 @@
       "nc_submits": 1241,
       "nc_30d": 1,
       "nc_today": 0,
-      "nc_date": "2026-10-19"
+      "nc_date": "2026-10-19",
+      "cf_total": 363,
+      "cf_today": 0,
+      "cf_30d": 0,
+      "cf_date": "2026-10-19"
     },
     "24": {
       "cf_rating": 1632,
@@ -400,7 +408,11 @@
       "cf_rating": 1825,
       "cf_max_rating": 1873,
       "cf_rank": "expert",
-      "cf_max_rank": "expert"
+      "cf_max_rank": "expert",
+      "cf_total": 1530,
+      "cf_today": 0,
+      "cf_30d": 0,
+      "cf_date": "2026-10-19"
     },
     "26": {
       "cf_rating": 2210,

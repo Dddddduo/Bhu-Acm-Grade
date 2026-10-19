@@ -14,11 +14,19 @@
 //  - /acm/contest/profile/<uid>                 -> Rating、Rating排名
 //  - /acm/contest/profile/<uid>/practice-coding -> 题已挑战/题已通过/次提交 +
 //    提交记录表格(答案正确 + 提交时间) -> nc_today / nc_30d
+//
+// 用法二:npm run refresh:nc(= 本脚本加 --nc-only)
+//  - 只刷牛客,完全跳过 CF(CF 由浏览器端 liveCf.js 实时抓,或由全量 refresh 维护)
+//  - 旧快照里的 CF 字段原样保留。GitHub Actions 每 30 分钟定时跑这个模式
 // ============================================================
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import https from 'node:https'
+
+// 只刷牛客:GitHub Actions 的共享出口 IP 很容易被 CF 限流(429),
+// 定时任务没必要碰 CF —— CF 数据浏览器自己每 5 分钟实时抓
+const NC_ONLY = process.argv.includes('--nc-only')
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const MEMBERS_FILE = path.join(ROOT, 'public/data/members.json')
@@ -41,7 +49,7 @@ function mergeInto(oldRec, newRec, todayStr) {
 }
 
 const API = 'https://codeforces.com/api'
-const CF_GAP_MS = 2600 // CF 官方限速 1 次/2s;本地连跑容易触发 429 惩罚,留点余量
+const CF_GAP_MS = 3000 // CF 官方限速 1 次/2s;本地连跑容易触发 429 惩罚,留点余量
 const PAGE = 100 // user.status 每页条数
 const MAX_PAGES = 30 // CF 单人翻页上限(3000 条提交,够覆盖总做题)
 const DAY = 86400
@@ -294,12 +302,21 @@ async function main() {
   const oldUsers = readOldStats()
   const todayStr = ncWindow().todayStr
 
-  const handles = [...new Set(members.filter((m) => m.cf_handle).map((m) => m.cf_handle))]
-  console.log(`拉取 CF 基本信息(${handles.length} 个 handle,批量)…`)
-  const info = await fetchCfInfo(handles)
+  // 只刷牛客时:先拿旧快照打底(旧 CF 字段原样保留),再往下覆盖
+  const users = NC_ONLY ? JSON.parse(JSON.stringify(oldUsers)) : {}
 
-  const users = {}
-  const cfTasks = members
+  const handles = [...new Set(members.filter((m) => m.cf_handle).map((m) => m.cf_handle))]
+  let info = {}
+  if (NC_ONLY) {
+    console.log('模式:只刷牛客(--nc-only),跳过 CF,旧 CF 数据原样保留')
+  } else {
+    console.log(`拉取 CF 基本信息(${handles.length} 个 handle,批量)…`)
+    info = await fetchCfInfo(handles)
+  }
+
+  const cfTasks = NC_ONLY
+    ? []
+    : members
     .filter((m) => m.cf_handle)
     .map(async (m) => {
       const id = String(m.id)
@@ -346,7 +363,8 @@ async function main() {
   }
 
   const stats = {
-    updated_at: new Date().toLocaleString('zh-CN', { hour12: false }),
+    // 固定北京时间:GitHub Actions runner 是 UTC 时区,不写死会差 8 小时
+    updated_at: new Date().toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }),
     users,
   }
   writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2) + '\n', 'utf8')

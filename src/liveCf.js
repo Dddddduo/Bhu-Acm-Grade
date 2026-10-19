@@ -3,8 +3,7 @@
 //
 // 为什么能在浏览器里直接抓 CF?
 //  - CF API 返回 access-control-allow-origin: *(实测验证),允许任何网页跨域读取
-//  - 牛客没有这个头,浏览器抓不到 -> 牛客数据用仓库 stats.json 快照兜底
-//    (需要更新牛客时,维护者本地跑 npm run refresh 再 push)
+//  - 牛客实测同样放行跨域 GET(ACAO 回显来源),牛客数据见 liveNc.js 实时抓
 //
 // 限速:CF 官方要求最多 1 次/2s,这里 2.2s 闸门串行排队(和 fetchStats.js 同规则)
 // 抓什么:

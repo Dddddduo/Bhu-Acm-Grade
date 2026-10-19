@@ -1,15 +1,16 @@
 <script setup>
-// 主页面:加载 members.json + stats.json(仓库快照),
-// 再在浏览器里定时直连 Codeforces 官方 API 刷新 CF 数据(不落盘,只更内存数组)。
-// 牛客不允许浏览器跨域抓取,以仓库快照为准(维护者本地 npm run refresh 后 push)。
+// 主页面:加载 members.json + stats.json(仓库快照打底),
+// 再在浏览器里定时直连刷新:CF 官方 API + 牛客渲染页(均允许跨域,实测)。
+// 不落盘,只更内存数组;今日/近30天这类仍需脚本采集的字段以快照为准。
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import RankTable from './components/RankTable.vue'
 import MobileCards from './components/MobileCards.vue'
 import { COLUMNS } from './columns.js'
 import { weightedScore, rowValue, WEIGHTS, RATING_UNIT, SOLVED_UNIT } from './score.js'
 import { fetchCfLive } from './liveCf.js'
+import { fetchNcLive } from './liveNc.js'
 
-const LIVE_EVERY_MS = 5 * 60 * 1000 // 每 5 分钟一轮:重读快照 + 实时抓 CF
+const LIVE_EVERY_MS = 5 * 60 * 1000 // 每 5 分钟一轮:重读快照 + 实时抓 CF/牛客
 
 // 规则说明里的权重条
 const RULE_LIST = [
@@ -153,11 +154,13 @@ async function loadJson(path) {
 }
 
 // ---------- 浏览器端定时抓取(约每 5 分钟一轮) ----------
-// 一轮干两件事:
-//  1) 重读仓库快照 stats.json -> 牛客数据 / CF 总做题也跟着换新(维护者 push 后
-//     开着的页面最多 5 分钟就更新,不用手动刷新浏览器)
-//  2) CF 官方 API 允许跨域(实测 access-control-allow-origin: *)-> 直连实时抓,
-//     拿到就覆盖快照;任何一个人抓失败就跳过,保留旧值,绝不清空。
+// 一轮干三件事:
+//  1) 重读仓库快照 stats.json -> 今日/近30天这类仍需脚本采集的字段跟着换新
+//     (维护者 push 后开着的页面最多 5 分钟就更新,不用手动刷新浏览器)
+//  2) CF 官方 API 允许跨域(实测 access-control-allow-origin: *)-> 直连实时抓;
+//  3) 牛客页面同样允许跨域(实测 ACAO 回显来源)且是服务端渲染 HTML ->
+//     直连实时抓 Rating / 总过题数(见 liveNc.js);
+//     任何一个人抓失败就跳过,保留旧值,绝不清空。
 let liveTimer = null
 function onVisible() {
   // 从别的标签页切回来,如果距上次抓取已超过一个周期,立刻补一轮
@@ -171,24 +174,66 @@ async function refreshLive() {
   liveError.value = ''
   try {
     // 先重读仓库快照:维护者 push 新 stats.json 后,开着的页面不用刷新,
-    // 牛客数据和 CF 总做题最多 5 分钟也会跟着换新
+    // 快照类数据最多 5 分钟也会跟着换新
     const st = await loadJson('data/stats.json').catch(() => null)
     if (st && st.users) stats.value = st
-    const cf = await fetchCfLive(members.value)
+    // CF 与牛客两家并发抓:各自内部有自己的限速闸门,互不干扰
+    const [cf, nc] = await Promise.all([
+      fetchCfLive(members.value).catch((e) => {
+        console.warn('[live] CF:', e)
+        liveError.value = 'CF 实时获取失败'
+        return {}
+      }),
+      fetchNcLive(members.value).catch((e) => {
+        console.warn('[live] 牛客:', e)
+        liveError.value = liveError.value ? liveError.value + ' / 牛客实时获取失败' : '牛客实时获取失败'
+        return {}
+      }),
+    ])
     const patch = { ...livePatch.value }
     for (const [id, rec] of Object.entries(cf)) {
       patch[id] = { ...(patch[id] || {}), ...rec }
     }
+    for (const [id, rec] of Object.entries(nc)) {
+      patch[id] = { ...(patch[id] || {}), ...rec }
+    }
     livePatch.value = patch
-    if (Object.keys(cf).length) {
+    if (Object.keys(cf).length || Object.keys(nc).length) {
       liveAt.value = new Date().toLocaleString('zh-CN', { hour12: false })
     }
+    logLive(cf, nc)
   } catch (e) {
-    liveError.value = 'CF 实时获取失败'
-    console.warn('[live] CF:', e)
+    liveError.value = liveError.value || '实时获取失败'
+    console.warn('[live]', e)
   } finally {
     liveBusy.value = false
   }
+}
+
+// 把这一轮实时抓到的数据逐人打到浏览器控制台(F12 -> Console),方便核对
+// 抓取现场:哪个字段拿到了、哪个字段没拿到(缺失 = 该请求失败,沿用旧值)
+function logLive(cf, nc) {
+  const byId = Object.fromEntries(members.value.map((m) => [String(m.id), m]))
+  const ids = [...new Set([...Object.keys(cf), ...Object.keys(nc)])]
+  if (!ids.length) {
+    console.warn('[live] 本轮 CF / 牛客 都没抓到数据(全部沿用旧值)')
+    return
+  }
+  console.groupCollapsed(`[live] ${new Date().toLocaleString('zh-CN', { hour12: false })} 实时抓取 ${ids.length} 人`)
+  for (const id of ids) {
+    const name = byId[id]?.name || `#${id}`
+    const c = cf[id] || {}
+    const n = nc[id] || {}
+    const cfPart = Object.keys(c).length
+      ? `CF: rating=${c.cf_rating ?? '—'} 最高=${c.cf_max_rating ?? '—'} 今日=${c.cf_today ?? '—'} 近30天=${c.cf_30d ?? '—'}`
+      : 'CF: 本轮未抓到(保留旧值)'
+    const ncPart = Object.keys(n).length
+      ? `牛客: Rating=${n.nc_rating ?? '—'} 排名=${n.nc_rank ?? '—'} 已通过=${n.nc_solved ?? '—'}`
+      : '牛客: 本轮未抓到(保留旧值)'
+    console.log(`  ${name} —— ${cfPart} | ${ncPart}`)
+  }
+  console.log('  合并后的实时 patch:', livePatch.value)
+  console.groupEnd()
 }
 
 onMounted(async () => {
@@ -219,7 +264,7 @@ const updatedText = computed(() => {
   const snap = stats.value.updated_at ? `快照 ${stats.value.updated_at}` : '尚无快照'
   let live = ''
   if (liveBusy.value) live = ' · 实时抓取中…'
-  else if (liveAt.value) live = ` · CF 实时 ${liveAt.value}`
+  else if (liveAt.value) live = ` · 实时 ${liveAt.value}`
   else if (liveError.value) live = ` · ${liveError.value}(显示快照)`
   return snap + live
 })
@@ -341,7 +386,8 @@ const updatedText = computed(() => {
     </main>
 
     <footer class="foot">
-      数据约每 5 分钟自动刷新:CF 实时抓取 · 牛客读仓库快照 ·
+      数据约每 5 分钟自动刷新:CF Rating/今日 · 牛客 Rating/总过题 浏览器实时抓取 ·
+      其余以仓库快照为准 ·
       名单维护:编辑 <code>public/data/members.json</code>
     </footer>
   </div>
