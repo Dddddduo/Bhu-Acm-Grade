@@ -3,6 +3,7 @@
 // 数据列取值一律来自 row.stats(liveCf.js / liveNc.js 实时补丁 + score.js 算出的总分)
 // 名次/奖牌不按当前排序列算,而是父组件按**积分总分**切好的 levels(gold/silver/bronze/unranked),
 // 换成别的列排序时每个人的奖牌等级保持不变;没数据的人显示「未定级」(不再用 —)
+// ★ showMedals=false(老登榜):整列去掉评级/奖牌——不评奖牌,排名不分先后
 import TierBadge from './TierBadge.vue'
 
 const props = defineProps({
@@ -11,6 +12,7 @@ const props = defineProps({
   levels: { type: Map, required: true }, // 成员id -> { rank, level }
   sortKey: { type: String, default: '' },
   sortDir: { type: String, default: 'desc' },
+  showMedals: { type: Boolean, default: true },
 })
 const emit = defineEmits(['sort'])
 
@@ -32,8 +34,8 @@ function todayClass(v) {
     <table>
       <thead>
         <tr>
-          <th class="col-rank sticky-col">评级</th>
-          <th class="col-name sticky-col">成员</th>
+          <th v-if="showMedals" class="col-rank sticky-col">评级</th>
+          <th class="col-name sticky-col" :class="{ 'no-rank': !showMedals }">成员</th>
           <th
             v-for="col in columns"
             :key="col.key"
@@ -50,7 +52,7 @@ function todayClass(v) {
       </thead>
       <tbody>
         <tr v-for="(row, i) in rows" :key="row.member.id">
-          <td class="col-rank sticky-col">
+          <td v-if="showMedals" class="col-rank sticky-col">
             <span
               class="rank-cell"
               :class="[levelOf(row).level]"
@@ -63,7 +65,7 @@ function todayClass(v) {
               <template v-else>未定级</template>
             </span>
           </td>
-          <td class="col-name sticky-col">
+          <td class="col-name sticky-col" :class="{ 'no-rank': !showMedals }">
             <span class="who-text">
               <b>{{ row.member.name }}</b>
               <small>{{ row.member.clazz }}</small>
@@ -104,7 +106,7 @@ function todayClass(v) {
           </td>
         </tr>
         <tr v-if="rows.length === 0">
-          <td :colspan="columns.length + 4" class="no-data">没有匹配的成员</td>
+          <td :colspan="columns.length + (showMedals ? 4 : 3)" class="no-data">没有匹配的成员</td>
         </tr>
       </tbody>
     </table>
@@ -144,6 +146,8 @@ thead th {
 thead .sticky-col { z-index: 4; }
 .col-rank.sticky-col { left: 0; }
 .col-name.sticky-col { left: 92px; box-shadow: 6px 0 8px -6px rgba(28,42,90,0.18); }
+/* 老登榜无评级列:成员列就是第一列,吸附位置归零 */
+.col-name.sticky-col.no-rank { left: 0; }
 tbody tr:nth-child(even) .sticky-col { background: #fafbff; }
 tbody tr:hover .sticky-col { background: var(--accent-soft); }
 

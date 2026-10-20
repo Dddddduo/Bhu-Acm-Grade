@@ -3,8 +3,9 @@
 // 代理,见 liveNc.js —— 牛客页面对跨站 Origin 会被 WAF 拦,浏览器直连拿不到)。
 // ★ 进页面先用 localStorage 缓存立刻渲染,缓存不超过 LIVE_EVERY_MS 就不再重新调三方;
 //   页面开着每隔 LIVE_EVERY_MS 自动抓一轮,抓完写回缓存。
-// ★ 总分/名次见 score.js:CF 70%(Rating30/最高15/近30天15/总题10)+ 牛客 30%(Rating20/总过题10);
+// ★ 总分/名次见 score.js:CF 75%(Rating30/最高5/近30天10/总题30)+ 牛客 25%(Rating10/总过题15);
 //   按总分排,前 12% 金牌、24% 银牌、36% 铜牌(向上取整),其余/没数据 = 未定级。
+//   ★ 奖牌只挂新生榜;老登榜不显示评级列,页面标注「排名不分先后」。
 // 抓到的值进 livePatch + localStorage;抓失败的人跳过、保留旧值(宁旧勿丢)。
 // Worker 不可用 -> 提示一次,牛客列显示未定级,CF 列照常。
 import { ref, computed, onMounted, onUnmounted } from 'vue'
@@ -349,14 +350,14 @@ const updatedText = computed(() => {
         <summary>📐 各列数据怎么来的?</summary>
         <div class="rules-body">
           <ul class="rule-notes">
-            <li><strong>奖牌</strong>:按总分排名,前 12% 金牌、随后 24% 银牌、随后 36% 铜牌(名额向上取整);排在奖牌线之后、或完全没有数据的人显示<strong>未定级</strong>。</li>
+            <li><strong>奖牌</strong>(仅新生榜):按总分排名,前 12% 金牌、随后 24% 银牌、随后 36% 铜牌(名额向上取整);排在奖牌线之后、或完全没有数据的人显示<strong>未定级</strong>。<strong>老登榜不评奖牌</strong>,表格不显示评级列——数据仅供参考,<strong>排名不分先后</strong>。</li>
             <li><strong>CF Rating / CF 最高分</strong>:Codeforces 官方 API <code>user.info</code>,按官方段位上色。</li>
             <li><strong>CF 总做题 / CF 近30天</strong>:官方 API <code>user.status</code> 全部提交历史里,verdict=OK 的<strong>不同题目</strong>数(近30天为滚动30天窗口;同一题反复 AC 只算一道)。</li>
             <li><strong>CF 今日</strong>:北京时间今日 0 点起 AC 的不同题目数;今天还没抓到就显示<strong>未定级</strong>,绝不拿昨天的数冒充。</li>
-            <li><strong>牛客 Rating</strong>:牛客 <code>rating-history</code> 接口最新一条记录的 Rating。该接口对带跨站 Origin 的请求会被 WAF 拦截,浏览器无法直连,经 Cloudflare Worker 代理获取。</li>
-            <li><strong>牛客总过题</strong>:牛客个人主页官方统计「题已通过」数(按题目去重的 AC 题数,同一题反复 AC 只算一次,与 CF 总做题同口径),经 Worker 读取,约每 10 分钟更新。</li>
+            <li><strong>牛客 Rating</strong>:牛客 <code>rating-history</code> 接口最新一条记录的 Rating。该接口对带跨站 Origin 的请求会被 WAF 拦截,浏览器无法直连,经服务端代理(腾讯云 SCF Web 函数)获取。</li>
+            <li><strong>牛客总过题</strong>:牛客个人主页官方统计「题已通过」数(按题目去重的 AC 题数,同一题反复 AC 只算一次,与 CF 总做题同口径),经代理读取,约每 10 分钟更新。</li>
             <li>数据缓存在浏览器里:打开页面先显示缓存,超过 30 分钟才自动重抓;页面开着每 30 分钟更新一轮。某人抓失败只跳过他(保留旧值),不影响别人。</li>
-            <li>默认排序:新生按<strong>总分</strong>,老登按 <strong>CF 最高分</strong>;点表头可按任意列单独排序。🌟 今日之星:按当天 CF 做题数取前 3。</li>
+            <li>默认排序:新生按<strong>总分</strong>,老登按 <strong>CF 最高分</strong>(仅排列展示,不代表名次——老登榜排名不分先后);点表头可按任意列单独排序。🌟 今日之星:按当天 CF 做题数取前 3。</li>
           </ul>
         </div>
       </details>
@@ -377,7 +378,8 @@ const updatedText = computed(() => {
 
       <h4><strong>积分总分：</strong><a href="https://codeforces.com/" target="_blank">Codeforces</a>占75分(当前Rating30%+最高Rating5%+近30天做题10%+总做题30%)，<a href="https://ac.nowcoder.com/" target="_blank">牛客</a>占25分(Rating10%+总过题15%)；无数据项按0计。</h4>
 
-
+      <!-- 老登榜:不评奖牌,只列数据 -->
+      <p v-if="group === 'old'" class="no-order-tip">📌 老登榜不评奖牌，<strong>排名不分先后</strong>；下方顺序仅为当前排序列的结果。</p>
 
       <p v-if="loading" class="hint">加载名单…</p>
       <p v-else-if="loadError" class="hint error">
@@ -391,13 +393,14 @@ const updatedText = computed(() => {
         :levels="levels"
         :sort-key="sortKey"
         :sort-dir="sortDir"
+        :show-medals="group === 'fresh'"
         @sort="onSort"
       />
-      <MobileCards v-else :rows="sorted" :levels="levels" />
+      <MobileCards v-else :rows="sorted" :levels="levels" :show-medals="group === 'fresh'" />
     </main>
 
     <footer class="foot">
-      数据实时抓取 + 浏览器缓存:CF 各列直连官方 API · 牛客 Rating / 总过题数经 Cloudflare Worker 代理 ·
+      数据实时抓取 + 浏览器缓存:CF 各列直连官方 API · 牛客 Rating / 总过题数经服务端代理(腾讯云 SCF)·
       名单维护:编辑 <code>public/data/members.json</code>
       <div class="foot-repo">
         <a href="https://github.com/Dddddduo/Bhu-Acm-Grade" target="_blank" rel="noopener">
@@ -504,6 +507,14 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 
 .hint { padding: 40px; text-align: center; color: var(--muted); background: var(--card); border-radius: 14px; box-shadow: var(--shadow); }
 .hint.error { color: #d02020; }
+
+/* 老登榜「排名不分先后」提示条 */
+.no-order-tip {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 16px; margin: 0 0 14px; font-size: 13px; color: var(--muted);
+  box-shadow: var(--shadow); text-align: center;
+}
+.no-order-tip strong { color: var(--accent); }
 
 .foot { margin-top: 22px; color: var(--muted); font-size: 12px; text-align: center; }
 .foot code { background: #e4e9f4; padding: 1px 6px; border-radius: 4px; }

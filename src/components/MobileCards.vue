@@ -1,11 +1,13 @@
 <script setup>
 // 手机端卡片视图:一人一张卡,不用左右滑
 // 数据口径和 RankTable 完全一致(同一个 rows;奖牌用父组件按总分切好的 levels)
+// ★ showMedals=false(老登榜):卡头奖牌徽章整块隐藏——不评奖牌,排名不分先后
 import TierBadge from './TierBadge.vue'
 
 const props = defineProps({
   rows: { type: Array, required: true },
   levels: { type: Map, required: true }, // 成员id -> { rank, level }
+  showMedals: { type: Boolean, default: true },
 })
 
 // 卡片上展示的字段:和 columns.js 里的列保持一致(加列记得两边都改)
@@ -30,7 +32,7 @@ function levelOf(row) {
   <div class="cards">
     <div v-for="row in rows" :key="row.member.id" class="card">
       <div class="card-head">
-        <span class="lvl" :class="levelOf(row).level">
+        <span v-if="showMedals" class="lvl" :class="levelOf(row).level">
           <template v-if="MEDAL[levelOf(row).level]">{{ MEDAL[levelOf(row).level] }}{{ levelOf(row).rank }}</template>
           <template v-else>未定级</template>
         </span>
