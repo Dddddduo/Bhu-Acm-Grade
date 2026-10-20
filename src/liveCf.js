@@ -12,7 +12,7 @@
 // ============================================================
 
 const API = 'https://codeforces.com/api'
-const GAP_MS = 3000
+const GAP_MS = 2500
 const PAGE = 10000 // user.status 单页上限内取大,减少翻页次数(实测 count=10000 全量返回)
 const MAX_PAGES = 5 // 安全阀:单人最多翻 5 万条提交,再多只按已翻到的算
 
