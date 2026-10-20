@@ -48,7 +48,7 @@ const NC_BY_RATING = [
 ]
 
 const color = computed(() => {
-  if (props.rating == null) return 'var(--muted)'
+  if (props.rating == null) return '' // 没数据不着色,走 .none 样式(未定级灰)
   if (props.platform === 'nc') {
     const hit = NC_BY_RATING.find(([min]) => props.rating >= min)
     return `var(${hit ? hit[1] : '--nc-gray'})`
@@ -68,8 +68,8 @@ const rankText = computed(() => {
 </script>
 
 <template>
-  <span class="tier-badge" :style="{ color }">
-    <template v-if="rating == null">—</template>
+  <span class="tier-badge" :class="{ none: rating == null }" :style="{ color }">
+    <template v-if="rating == null">未定级</template>
     <template v-else>
       <b>{{ rating }}</b>
       <em v-if="rankText" class="tier-name">{{ rankText }}</em>
@@ -80,5 +80,6 @@ const rankText = computed(() => {
 <style scoped>
 .tier-badge { display: inline-flex; align-items: baseline; gap: 6px; font-variant-numeric: tabular-nums; }
 .tier-badge b { font-size: 15px; }
+.tier-badge.none { color: #b8bdd0; font-size: 12px; }
 .tier-name { font-style: normal; font-size: 11px; opacity: 0.85; }
 </style>

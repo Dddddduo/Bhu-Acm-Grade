@@ -1,47 +1,29 @@
 <script setup>
-// 榜单表格(桌面端):名次 + 成员 + 数据列 + 主页链接
-// 列的取值分三类:stats 字段 / member 字段(账号ID) / 行上的综合分
-import { computed } from 'vue'
+// 榜单表格(桌面端):评级 + 成员 + 数据列 + 主页链接
+// 数据列取值一律来自 row.stats(liveCf.js / liveNc.js 实时补丁 + score.js 算出的总分)
+// 名次/奖牌不按当前排序列算,而是父组件按**积分总分**切好的 levels(gold/silver/bronze/unranked),
+// 换成别的列排序时每个人的奖牌等级保持不变;没数据的人显示「未定级」(不再用 —)
 import TierBadge from './TierBadge.vue'
-import { rowValue } from '../score.js'
 
 const props = defineProps({
   rows: { type: Array, required: true },
   columns: { type: Array, required: true },
+  levels: { type: Map, required: true }, // 成员id -> { rank, level }
   sortKey: { type: String, default: '' },
   sortDir: { type: String, default: 'desc' },
 })
 const emit = defineEmits(['sort'])
 
-// 名次:按当前排序列,分值相同则并列(1,2,2,4 式)
-const ranks = computed(() => {
-  const out = []
-  let lastVal
-  let lastRank = 0
-  props.rows.forEach((row, i) => {
-    const v = rowValue(row, props.sortKey)
-    if (i === 0 || v !== lastVal) { lastRank = i + 1; lastVal = v }
-    out.push(lastRank)
-  })
-  return out
-})
+const MEDAL = { gold: '🥇', silver: '🥈', bronze: '🥉' }
 
-const MEDAL = ['🥇', '🥈', '🥉']
+function levelOf(row) {
+  return props.levels.get(String(row.member.id)) || { rank: null, level: 'unranked' }
+}
 
-// 今日做题的展示样式:0 题灰色,有题绿色高亮 pill
+// 今日做题的展示样式:0 题灰色,有题绿色高亮 pill,没数据走 empty(未定级)
 function todayClass(v) {
   if (v == null) return 'empty'
   return v > 0 ? 'active' : 'idle'
-}
-
-// 账号ID列:点击直达官方主页
-function homeUrl(col, row) {
-  return col.key === 'nc_id'
-    ? `https://ac.nowcoder.com/acm/contest/profile/${row.member.nowcoder_id}`
-    : `https://codeforces.com/profile/${row.member.cf_handle}`
-}
-function idVal(col, row) {
-  return col.key === 'nc_id' ? row.member.nowcoder_id : row.member.cf_handle
 }
 </script>
 
@@ -50,15 +32,15 @@ function idVal(col, row) {
     <table>
       <thead>
         <tr>
-          <th class="col-rank sticky-col">#</th>
+          <th class="col-rank sticky-col">评级</th>
           <th class="col-name sticky-col">成员</th>
           <th
             v-for="col in columns"
             :key="col.key"
             class="col-metric"
-            :class="{ active: sortKey === col.key, hot: col.hot, 'c-id': col.sortable === false, 'hide-m': col.hideMobile }"
-            @click="col.sortable !== false && emit('sort', col.key)"
-            :title="col.sortable === false ? '' : `点击按「${col.label}」排序`"
+            :class="{ active: sortKey === col.key, hot: col.hot }"
+            @click="emit('sort', col.key)"
+            :title="`点击按「${col.label}」排序`"
           >
             {{ col.label }}
             <span class="arrow" v-if="sortKey === col.key">{{ sortDir === 'desc' ? '▼' : '▲' }}</span>
@@ -69,9 +51,16 @@ function idVal(col, row) {
       <tbody>
         <tr v-for="(row, i) in rows" :key="row.member.id">
           <td class="col-rank sticky-col">
-            <span class="rank-cell" :class="{ top3: ranks[i] <= 3 }">
-              <template v-if="MEDAL[ranks[i] - 1]">{{ MEDAL[ranks[i] - 1] }}</template>
-              <template v-else>{{ ranks[i] }}</template>
+            <span
+              class="rank-cell"
+              :class="[levelOf(row).level]"
+              :title="levelOf(row).rank != null ? `总分 ${row.stats?.score ?? 0}(按积分排第 ${levelOf(row).rank})` : '暂无数据,未定级'"
+            >
+              <template v-if="MEDAL[levelOf(row).level]">
+                <span class="medal">{{ MEDAL[levelOf(row).level] }}</span>
+                <span class="rk">{{ levelOf(row).rank }}</span>
+              </template>
+              <template v-else>未定级</template>
             </span>
           </td>
           <td class="col-name sticky-col">
@@ -84,36 +73,28 @@ function idVal(col, row) {
             v-for="col in columns"
             :key="col.key"
             class="col-metric"
-            :class="{ hot: col.hot, 'hide-m': col.hideMobile }"
+            :class="{ hot: col.hot }"
           >
-            <!-- 综合分 -->
-            <b v-if="col.key === 'score'" class="score-num">{{ row.score }}</b>
-            <!-- 账号ID:点击直达主页,无账号显示 — -->
-            <a
-              v-else-if="col.idKey && idVal(col, row)"
-              :href="homeUrl(col, row)"
-              target="_blank"
-              rel="noopener"
-              class="handle"
-            >{{ idVal(col, row) }}</a>
-            <span v-else-if="col.idKey" class="empty">—</span>
+            <!-- Rating 列:按平台段位上色;没数据 TierBadge 显示未定级 -->
             <TierBadge
-              v-else-if="col.cfTier || col.ncTier"
+              v-if="col.cfTier || col.ncTier"
               :rating="row.stats?.[col.key] ?? null"
-              :rank="col.cfTier ? row.stats?.[col.rankKey] || '' : row.stats?.[col.rankKey] ?? ''"
+              :rank="col.cfTier ? row.stats?.[col.rankKey] || '' : ''"
               :platform="col.cfTier ? 'cf' : 'nc'"
             />
+            <!-- 今日列:高亮 pill -->
             <span
               v-else-if="col.hot"
               class="pill"
               :class="todayClass(row.stats?.[col.key])"
             >
-              <template v-if="row.stats?.[col.key] == null">—</template>
+              <template v-if="row.stats?.[col.key] == null">未定级</template>
               <template v-else-if="row.stats[col.key] > 0">{{ row.stats[col.key] }}</template>
               <template v-else>0</template>
             </span>
+            <!-- 普通数值列 -->
             <template v-else>
-              <span v-if="row.stats?.[col.key] == null" class="empty">—</span>
+              <span v-if="row.stats?.[col.key] == null" class="empty">未定级</span>
               <span v-else class="num">{{ row.stats[col.key] }}</span>
             </template>
           </td>
@@ -158,40 +139,41 @@ thead th {
   letter-spacing: 0.3px;
   border-bottom: 2px solid var(--line);
 }
-/* 左两列(名次/成员)横向滚动时固定,长表格不迷路 */
+/* 左两列(评级/成员)横向滚动时固定,长表格不迷路 */
 .sticky-col { position: sticky; z-index: 2; background: var(--card); }
 thead .sticky-col { z-index: 4; }
 .col-rank.sticky-col { left: 0; }
-.col-name.sticky-col { left: 56px; box-shadow: 6px 0 8px -6px rgba(28,42,90,0.18); }
+.col-name.sticky-col { left: 92px; box-shadow: 6px 0 8px -6px rgba(28,42,90,0.18); }
 tbody tr:nth-child(even) .sticky-col { background: #fafbff; }
 tbody tr:hover .sticky-col { background: var(--accent-soft); }
 
 .col-metric { cursor: pointer; user-select: none; }
-.col-metric.c-id { cursor: default; }
-.col-metric:hover:not(.c-id) { color: var(--accent); }
+.col-metric:hover { color: var(--accent); }
 .col-metric.active { color: var(--accent); }
 .col-metric.hot { color: var(--green); }
 .arrow { font-size: 10px; margin-left: 2px; }
 
-.col-rank { width: 56px; }
+.col-rank { width: 92px; }
 .rank-cell {
-  display: inline-flex; align-items: center; justify-content: center;
+  display: inline-flex; align-items: center; gap: 5px;
   min-width: 30px; height: 30px; border-radius: 9px;
   font-weight: 600; font-size: 13px; color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
-.rank-cell.top3 { background: #fff7e0; }
-.top3 { font-size: 18px; }
+.rank-cell .medal { font-size: 18px; }
+.rank-cell .rk { font-size: 12.5px; color: var(--muted); }
+.rank-cell.gold .rk { color: #a06a00; }
+.rank-cell.silver .rk { color: #6b7280; }
+.rank-cell.bronze .rk { color: #9a5b2d; }
+.rank-cell.unranked { font-size: 12px; font-weight: 500; color: #a5abc0; }
 
 .col-name { max-width: 150px; }
 .who-text { display: inline-flex; flex-direction: column; line-height: 1.25; }
 .who-text b { font-size: 14px; }
 .who-text small { color: var(--muted); font-size: 12px; font-weight: 400; }
 
-.score-num { font-size: 14.5px; color: var(--accent); font-variant-numeric: tabular-nums; }
-.handle { font-size: 12.5px; font-family: ui-monospace, Menlo, monospace; }
 .num { font-variant-numeric: tabular-nums; font-weight: 600; }
-.empty { color: #c6cbda; }
+.empty { color: #b8bdd0; font-size: 12px; }
 
 .pill {
   display: inline-block; min-width: 40px; text-align: center;

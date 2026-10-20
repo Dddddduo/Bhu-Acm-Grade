@@ -1,0 +1,5 @@
+# Cloudflare Worker 部署配置(命令行部署用;npx wrangler deploy)
+# 网页版部署(dash.cloudflare.com 粘贴代码)不需要这个文件
+name = "nc-proxy"
+main = "ncWorker.js"
+compatibility_date = "2026-01-01"

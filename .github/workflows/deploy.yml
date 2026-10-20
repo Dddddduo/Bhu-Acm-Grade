@@ -1,6 +1,6 @@
-# 只做两件事:打包网站 -> 发布到 GitHub Pages(不再抓取三方数据)
-# 数据刷新已改为浏览器端定时直连 Codeforces 官方 API(见 src/liveCf.js)
-# 牛客快照需要更新时:本地 npm run refresh 后 push,本流程会自动重新构建发布
+# 只做两件事:打包网站 -> 发布到 GitHub Actions 构建并发布到 GitHub Pages
+# 数据全部浏览器端实时抓取(CF 官方 API 直连,牛客 Rating / 总过题经 Cloudflare Worker 代理),
+# 仓库里只有 public/data/members.json 一个手工数据文件,无快照
 name: build-and-deploy
 
 on:

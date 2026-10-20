@@ -1,44 +1,64 @@
 <script setup>
-// 主页面:加载 members.json + stats.json(仓库快照打底),
-// 再在浏览器里定时直连刷新:CF 官方 API + 牛客渲染页(均允许跨域,实测)。
-// 不落盘,只更内存数组;今日/近30天这类仍需脚本采集的字段以快照为准。
+// 主页面:读 members.json 渲染,数据实时抓取(CF 直连官方 API;牛客只走 Cloudflare Worker
+// 代理,见 liveNc.js —— 牛客页面对跨站 Origin 会被 WAF 拦,浏览器直连拿不到)。
+// ★ 进页面先用 localStorage 缓存立刻渲染,缓存不超过 LIVE_EVERY_MS 就不再重新调三方;
+//   页面开着每隔 LIVE_EVERY_MS 自动抓一轮,抓完写回缓存。
+// ★ 总分/名次见 score.js:CF 70%(Rating30/最高15/近30天15/总题10)+ 牛客 30%(Rating20/总过题10);
+//   按总分排,前 12% 金牌、24% 银牌、36% 铜牌(向上取整),其余/没数据 = 未定级。
+// 抓到的值进 livePatch + localStorage;抓失败的人跳过、保留旧值(宁旧勿丢)。
+// Worker 不可用 -> 提示一次,牛客列显示未定级,CF 列照常。
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import RankTable from './components/RankTable.vue'
 import MobileCards from './components/MobileCards.vue'
 import { COLUMNS } from './columns.js'
-import { weightedScore, rowValue, WEIGHTS, RATING_UNIT, SOLVED_UNIT } from './score.js'
 import { fetchCfLive } from './liveCf.js'
 import { fetchNcLive } from './liveNc.js'
+import { computeScore, assignLevels } from './score.js'
 
-const LIVE_EVERY_MS = 5 * 60 * 1000 // 每 5 分钟一轮:重读快照 + 实时抓 CF/牛客
-
-// 规则说明里的权重条
-const RULE_LIST = [
-  { key: 'nc_rating', label: '牛客 Rating', pct: WEIGHTS.nc_rating * 100, cls: 'bar-nc' },
-  { key: 'nc_solved', label: '牛客 刷题数', pct: WEIGHTS.nc_solved * 100, cls: 'bar-nc' },
-  { key: 'cf_rating', label: 'CF Rating', pct: WEIGHTS.cf_rating * 100, cls: 'bar-cf' },
-  { key: 'cf_total', label: 'CF 刷题数', pct: WEIGHTS.cf_total * 100, cls: 'bar-cf' },
-]
+const LIVE_EVERY_MS = 30 * 60 * 1000 // 每 30 分钟自动抓一轮(缓存在这之内直接复用,不重抓)
+const CACHE_KEY = 'bhu-acm-live-cache-v1'
 
 const members = ref([])
-const stats = ref({ updated_at: null, users: {} })
 const loading = ref(true)
 const loadError = ref('')
 
-// 浏览器实时抓取的最新值:{ 成员id: 补丁字段 } —— 不落盘,关掉页面就没了
+// 实时抓到的值:{ 成员id: 补丁字段 } —— 同时写进 localStorage,
+// 下次进页面立刻用缓存渲染,不用等三方接口(见 loadCache / saveCache)
 const livePatch = ref({})
 // 最近一次实时抓取完成时间:**数字时间戳(Date.now())**
 // 曾有坑:这里存 toLocaleString 字符串,Chrome 中文下是 "2026/10/19 21:16:30",
 // replace(' ','T') 后 new Date() 解析成 NaN -> 超期判断永远 false -> 页面再也不自动刷
 const liveAt = ref(0)
 const liveBusy = ref(false) // 正在抓取
-const liveError = ref('') // 最近一次抓取失败原因(成功则清空)
+const liveError = ref('') // CF 侧最近一次抓取失败原因
+const ncHint = ref('') // 牛客侧提示(代理不可用 / 取数失败)
+
+// localStorage 缓存读写:全程 try/catch(无痕模式 / 配额满会抛),读写失败当没缓存用
+function loadCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY)
+    if (!raw) return null
+    const c = JSON.parse(raw)
+    if (!c || typeof c !== 'object' || !c.patch || typeof c.patch !== 'object') return null
+    if (!Number.isFinite(c.at) || c.at > Date.now()) return null // 时间戳异常/未来时间,视为脏缓存
+    return c
+  } catch {
+    return null
+  }
+}
+function saveCache() {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ at: liveAt.value, patch: livePatch.value }))
+  } catch {
+    /* 存不进去就算了,不影响页面 */
+  }
+}
 
 const search = ref('')
 const clazzFilter = ref('')
 const group = ref('fresh') // 新生 / 老登分开看
-// 默认排序:新生看综合得分,老登看 CF 最高分(毕业后当前分会掉,最高分才是真实力)
-const sortKey = ref('score')
+// 排序默认:新生按积分总分(奖牌按总分切,第一眼看到正确名次);老登按 CF 最高分
+const sortKey = ref(defaultSortFor('fresh'))
 const sortDir = ref('desc')
 
 function defaultSortFor(g) {
@@ -51,6 +71,12 @@ function selectGroup(g) {
   sortDir.value = 'desc'
 }
 
+// 排序取值:数值列直接从行数据里取;没数据 = 排最后(-Infinity)
+function rowValue(row, key) {
+  const v = row.stats?.[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : -Infinity
+}
+
 // 窄屏换卡片视图,表格不用左右划
 const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 760)
 function onResize() {
@@ -59,10 +85,7 @@ function onResize() {
 onMounted(() => window.addEventListener('resize', onResize))
 onUnmounted(() => window.removeEventListener('resize', onResize))
 
-// 老登榜不显示综合得分(默认按 CF 最高分排);新生榜照常显示
-const visibleColumns = computed(() =>
-  COLUMNS.filter((c) => !c.hidden && !(group.value === 'old' && c.key === 'score'))
-)
+const visibleColumns = computed(() => COLUMNS.filter((c) => !c.hidden))
 
 const groups = [
   { key: 'fresh', label: '新生' },
@@ -76,38 +99,36 @@ const classes = computed(() =>
 // 当前分组名单
 const groupMembers = computed(() => members.value.filter((m) => m.group === group.value))
 
-// 名单 + 成绩合并:仓库快照打底,浏览器实时抓到的字段(livePatch)覆盖同名项
-// score = 综合得分(牛客Rating20%+刷题10%,CF Rating40%+刷题30%)
-// "今日"列按日期口径显示:cf_date / nc_date 不是今天的,当没数据(—),
+// 名单 + 实时数据合并,并算出积分总分。"今日"列按日期口径显示:cf_date 不是北京今天的,
+// 当没数据(今日列显示未定级,但**不影响其它项计分**——近30天/总分照常),
 // 绝不把昨天的数字挂成今天的(宁缺勿假)
 function bjDate() {
   return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
 }
 const joined = computed(() => {
-  const users = stats.value.users || {}
   const live = livePatch.value
   const todayStr = bjDate()
   return groupMembers.value.map((m) => {
-    const id = String(m.id)
-    const snap = users[id]
-    const patch = live[id]
-    let st = patch ? { ...(snap || {}), ...patch } : snap || null
-    if (st) {
-      if (st.cf_date !== todayStr && 'cf_today' in st) st = { ...st, cf_today: null }
-      if (st.nc_date !== todayStr && 'nc_today' in st) st = { ...st, nc_today: null }
-    }
-    return { member: m, stats: st, score: weightedScore(st, m.group) }
+    let st = live[String(m.id)] || null
+    if (st && st.cf_date !== todayStr && 'cf_today' in st) st = { ...st, cf_today: null }
+    // 总分单独算:cf_today 不进积分,所以"今日过期"不影响 score
+    const raw = live[String(m.id)] || null
+    const score = raw ? computeScore(raw) : null
+    return { member: m, stats: st ? { ...st, score } : { score } }
   })
 })
 
-// 今日概览:CF + 牛客 两平台合计
+// 奖牌等级:按当前分组内总分排名切 12% 金 / 24% 银 / 36% 铜(向上取整),没数据=未定级
+const levels = computed(() => assignLevels(joined.value))
+
+// 今日概览 / 今日之星:CF 今日做题口径(牛客只展示 Rating,没有今日列)
 function todayOf(r) {
-  return (r.stats?.cf_today ?? 0) + (r.stats?.nc_today ?? 0)
+  return r.stats?.cf_today ?? 0
 }
 const todayActive = computed(() => joined.value.filter((r) => todayOf(r) > 0))
 const todaySum = computed(() => joined.value.reduce((s, r) => s + todayOf(r), 0))
 
-// 今日之星:按今日两平台合计做题数取前三(并列同名次,后面顺延)
+// 今日之星:按今日 CF 做题数取前三(并列同名次,后面顺延)
 const todayStars = computed(() => {
   const ranked = [...todayActive.value].sort((a, b) => todayOf(b) - todayOf(a))
   const out = []
@@ -156,14 +177,19 @@ async function loadJson(path) {
   return res.json()
 }
 
-// ---------- 浏览器端定时抓取(约每 5 分钟一轮) ----------
-// 一轮干三件事:
-//  1) 重读仓库快照 stats.json -> 今日/近30天这类仍需脚本采集的字段跟着换新
-//     (维护者 push 后开着的页面最多 5 分钟就更新,不用手动刷新浏览器)
-//  2) CF 官方 API 允许跨域(实测 access-control-allow-origin: *)-> 直连实时抓;
-//  3) 牛客页面同样允许跨域(实测 ACAO 回显来源)且是服务端渲染 HTML ->
-//     直连实时抓 Rating / 总过题数(见 liveNc.js);
-//     任何一个人抓失败就跳过,保留旧值,绝不清空。
+// ---------- 浏览器端定时抓取(30 分钟一轮 + localStorage 缓存) ----------
+// CF 官方 API 允许跨域(实测 ACAO: *)直连抓;牛客 rating-history 对跨站 Origin
+// 会被 WAF 拦(实测),必须经 Cloudflare Worker 代理(见 liveNc.js)。
+// 两家并发、各自内部有自己的限速闸门,互不干扰;
+// **抓到一个人就填一行**(onEach -> applyLive),不等全员完成,并写回缓存。
+// 任何一个人失败:跳过,保留旧值,绝不清空。
+
+// 单人补丁即时并入实时层:每次都是新对象,Vue 响应式立刻重渲染该行
+function applyLive(id, rec) {
+  livePatch.value = { ...livePatch.value, [id]: { ...(livePatch.value[id] || {}), ...rec } }
+  saveCache() // 抓一个存一个:中途关页面也不亏,下次进来立刻有数据
+}
+
 let liveTimer = null
 function onVisible() {
   // 从别的标签页切回来,如果距上次抓取已超过一个周期,立刻补一轮
@@ -174,39 +200,25 @@ async function refreshLive() {
   if (liveBusy.value || !members.value.length) return
   liveBusy.value = true
   liveError.value = ''
+  ncHint.value = ''
   try {
-    // 先重读仓库快照:维护者 push 新 stats.json 后,开着的页面不用刷新,
-    // 快照类数据最多 5 分钟也会跟着换新
-    const st = await loadJson('data/stats.json').catch(() => null)
-    if (st && st.users) stats.value = st
-    // CF 与牛客两家并发抓:各自内部有自己的限速闸门,互不干扰
     const [cf, nc] = await Promise.all([
-      fetchCfLive(members.value).catch((e) => {
+      fetchCfLive(members.value, applyLive).catch((e) => {
         console.warn('[live] CF:', e)
-        liveError.value = 'CF 实时获取失败'
+        liveError.value = 'CF 实时获取失败(下一轮自动重试)'
         return {}
       }),
-      fetchNcLive(members.value).catch((e) => {
+      fetchNcLive(members.value, applyLive).catch((e) => {
         console.warn('[live] 牛客:', e)
-        liveError.value = liveError.value ? liveError.value + ' / 牛客实时获取失败' : '牛客实时获取失败'
+        ncHint.value = e.proxyDown
+          ? '牛客列取数失败:请确认 Worker 代理已部署(见 README),之后重新粘贴 ncWorker.js 并 Deploy(CF 列不受影响)'
+          : '牛客 Rating 实时获取失败(下一轮自动重试)'
         return {}
       }),
     ])
-    const patch = { ...livePatch.value }
-    for (const [id, rec] of Object.entries(cf)) {
-      patch[id] = { ...(patch[id] || {}), ...rec }
-    }
-    for (const [id, rec] of Object.entries(nc)) {
-      patch[id] = { ...(patch[id] || {}), ...rec }
-    }
-    livePatch.value = patch
-    if (Object.keys(cf).length || Object.keys(nc).length) {
-      liveAt.value = Date.now()
-    }
+    liveAt.value = Object.keys(cf).length || Object.keys(nc).length ? Date.now() : liveAt.value
+    saveCache()
     logLive(cf, nc)
-  } catch (e) {
-    liveError.value = liveError.value || '实时获取失败'
-    console.warn('[live]', e)
   } finally {
     liveBusy.value = false
   }
@@ -227,33 +239,34 @@ function logLive(cf, nc) {
     const c = cf[id] || {}
     const n = nc[id] || {}
     const cfPart = Object.keys(c).length
-      ? `CF: rating=${c.cf_rating ?? '—'} 最高=${c.cf_max_rating ?? '—'} 今日=${c.cf_today ?? '—'} 近30天=${c.cf_30d ?? '—'}`
+      ? `CF: rating=${c.cf_rating ?? '—'} 最高=${c.cf_max_rating ?? '—'} 总题=${c.cf_total ?? '—'} 今日=${c.cf_today ?? '—'} 近30天=${c.cf_30d ?? '—'}`
       : 'CF: 本轮未抓到(保留旧值)'
     const ncPart = Object.keys(n).length
-      ? `牛客: Rating=${n.nc_rating ?? '—'} 排名=${n.nc_rank ?? '—'} 已通过=${n.nc_solved ?? '—'}`
+      ? `牛客: Rating=${n.nc_rating ?? '—'} 总过题=${n.nc_total ?? '—'}`
       : '牛客: 本轮未抓到(保留旧值)'
     console.log(`  ${name} —— ${cfPart} | ${ncPart}`)
   }
-  console.log('  合并后的实时 patch:', livePatch.value)
   console.groupEnd()
 }
 
 onMounted(async () => {
+  // 打开页面 = 先拿缓存秒开:表格立刻带数据出现,不再"空表等三方"
   try {
-    const [ms, st] = await Promise.all([
-      loadJson('data/members.json'),
-      loadJson('data/stats.json').catch(() => ({ updated_at: null, users: {} })),
-    ])
-    members.value = ms
-    stats.value = st
+    members.value = await loadJson('data/members.json')
   } catch (e) {
     loadError.value = String(e.message || e)
   } finally {
     loading.value = false
   }
-  // 定时任务在这里:打开页面就刷一轮(快照+CF),之后约每 5 分钟一轮
-  // (页面隐藏时不发请求,切回来发现超期立刻补刷)
-  refreshLive()
+  if (!members.value.length) return
+
+  const cached = loadCache()
+  if (cached) {
+    livePatch.value = cached.patch
+    liveAt.value = cached.at
+  }
+  // 缓存还在有效期内 -> 完全不调三方;超期(或没缓存)才抓一轮
+  if (Date.now() - liveAt.value > LIVE_EVERY_MS) refreshLive()
   liveTimer = setInterval(onVisible, 60 * 1000) // 每分钟看一眼是否超期
   document.addEventListener('visibilitychange', onVisible)
 })
@@ -263,13 +276,9 @@ onUnmounted(() => {
 })
 
 const updatedText = computed(() => {
-  const snap = stats.value.updated_at ? `快照 ${stats.value.updated_at}` : '尚无快照'
-  let live = ''
-  if (liveBusy.value) live = ' · 实时抓取中…'
-  else if (liveAt.value)
-    live = ` · 实时 ${new Date(liveAt.value).toLocaleString('zh-CN', { hour12: false })}`
-  else if (liveError.value) live = ` · ${liveError.value}(显示快照)`
-  return snap + live
+  if (liveBusy.value) return '实时更新中…'
+  if (liveAt.value) return `更新于 ${new Date(liveAt.value).toLocaleString('zh-CN', { hour12: false })}`
+  return '等待首轮抓取…'
 })
 </script>
 
@@ -303,7 +312,7 @@ const updatedText = computed(() => {
         </button>
       </nav>
 
-      <!-- 今日概览 -->
+      <!-- 今日概览:CF 今日做题口径 -->
       <section class="summary">
         <div class="sum-card">
           <div class="sum-num">{{ groupMembers.length }}</div>
@@ -311,7 +320,7 @@ const updatedText = computed(() => {
         </div>
         <div class="sum-card accent">
           <div class="sum-num">{{ todayActive.length }}</div>
-          <div class="sum-label">今日已刷题</div>
+          <div class="sum-label">今日已刷题(CF)</div>
         </div>
         <div class="sum-card">
           <div class="sum-num">{{ todaySum }}</div>
@@ -319,41 +328,35 @@ const updatedText = computed(() => {
         </div>
       </section>
 
-      <!-- 今日之星:两平台今日合计做题数前 3 -->
+      <!-- 今日之星:CF 今日做题数前 3 -->
       <div v-if="todayStars.length" class="star-strip">
         <span class="strip-tag">🌟 今日之星 TOP{{ todayStars.length }}</span>
         <span v-for="s in todayStars" :key="s.member.id" class="star-chip">
           <em>{{ ['🥇', '🥈', '🥉'][s.starRank - 1] }}</em>
           {{ s.member.name }}
           <b>{{ s.today }}</b> 题
-          <small>(CF {{ s.stats?.cf_today ?? 0 }} · 牛客 {{ s.stats?.nc_today ?? 0 }})</small>
         </span>
       </div>
 
-      <!-- 综合得分规则说明 -->
+      <!-- 抓取提示条:牛客代理 / CF 失败 -->
+      <div v-if="ncHint || liveError" class="notice">
+        <div v-if="ncHint" class="notice-line">🔌 {{ ncHint }}</div>
+        <div v-if="liveError" class="notice-line">⚠️ {{ liveError }}</div>
+      </div>
+
+      <!-- 数据口径说明 -->
       <details class="rules">
-        <summary>📐 综合得分怎么算?</summary>
+        <summary>📐 各列数据怎么来的?</summary>
         <div class="rules-body">
-          <div class="rule-bars">
-            <div class="rule-bar" v-for="w in RULE_LIST" :key="w.key">
-              <span class="rb-label">{{ w.label }}</span>
-              <span class="rb-track"><i :style="{ width: w.pct + '%' }" :class="w.cls" /></span>
-              <span class="rb-pct">{{ Math.round(w.pct) }}%</span>
-            </div>
-          </div>
           <ul class="rule-notes">
-            <li>
-              Rating 分 = <code>Rating ÷ {{ RATING_UNIT }}</code>,不设上限,
-              2400 分约折成 100 分,再高继续累计。
-            </li>
-            <li>
-              刷题分 = <code>已通过题数 ÷ {{ SOLVED_UNIT }}</code>,不设上限,
-              多刷多得,继续累计。
-            </li>
-            <li>四个维度按权重相加即综合分,没有账号 / 没数据 = 该维度 0 分(权重不挪给别的维度)。</li>
-            <li>老登榜不显示综合得分,默认按<strong>「CF 最高分」</strong>排序(毕业/长期不打当前分会掉,最高分才是真实力);新生榜显示综合分,按当前分默认综合分排。</li>
-            <li>榜单默认按综合分从高到低;点表头可以按任意一列单独排序。</li>
-            <li>🌟 今日之星:按当天 <code>CF 今日 + 牛客 今日</code> 合计做题数取前 3,随每次刷新自动更新。</li>
+            <li><strong>奖牌</strong>:按总分排名,前 12% 金牌、随后 24% 银牌、随后 36% 铜牌(名额向上取整);排在奖牌线之后、或完全没有数据的人显示<strong>未定级</strong>。</li>
+            <li><strong>CF Rating / CF 最高分</strong>:Codeforces 官方 API <code>user.info</code>,按官方段位上色。</li>
+            <li><strong>CF 总做题 / CF 近30天</strong>:官方 API <code>user.status</code> 全部提交历史里,verdict=OK 的<strong>不同题目</strong>数(近30天为滚动30天窗口;同一题反复 AC 只算一道)。</li>
+            <li><strong>CF 今日</strong>:北京时间今日 0 点起 AC 的不同题目数;今天还没抓到就显示<strong>未定级</strong>,绝不拿昨天的数冒充。</li>
+            <li><strong>牛客 Rating</strong>:牛客 <code>rating-history</code> 接口最新一条记录的 Rating。该接口对带跨站 Origin 的请求会被 WAF 拦截,浏览器无法直连,经 Cloudflare Worker 代理获取。</li>
+            <li><strong>牛客总过题</strong>:牛客个人主页官方统计「题已通过」数(按题目去重的 AC 题数,同一题反复 AC 只算一次,与 CF 总做题同口径),经 Worker 读取,约每 10 分钟更新。</li>
+            <li>数据缓存在浏览器里:打开页面先显示缓存,超过 30 分钟才自动重抓;页面开着每 30 分钟更新一轮。某人抓失败只跳过他(保留旧值),不影响别人。</li>
+            <li>默认排序:新生按<strong>总分</strong>,老登按 <strong>CF 最高分</strong>;点表头可按任意列单独排序。🌟 今日之星:按当天 CF 做题数取前 3。</li>
           </ul>
         </div>
       </details>
@@ -372,26 +375,35 @@ const updatedText = computed(() => {
         <span class="count">共 {{ sorted.length }} 人</span>
       </div>
 
-      <p v-if="loading" class="hint">加载中…</p>
+      <h4><strong>积分总分</strong>:CF 占 70 分(当前 Rating 30% + 最高 Rating 5% + 近30天做题 5% + 总做题 30%),牛客占 30 分(Rating 15% + 总过题 25%);没数据的项按 0 计。</h4>
+
+
+      <p v-if="loading" class="hint">加载名单…</p>
       <p v-else-if="loadError" class="hint error">
-        数据加载失败:{{ loadError }}<br />请先运行 npm run refresh 生成成绩数据。
+        名单加载失败:{{ loadError }}<br />请检查 public/data/members.json。
       </p>
 
       <RankTable
         v-else-if="!isMobile"
         :rows="sorted"
         :columns="visibleColumns"
+        :levels="levels"
         :sort-key="sortKey"
         :sort-dir="sortDir"
         @sort="onSort"
       />
-      <MobileCards v-else :rows="sorted" :show-score="group !== 'old'" />
+      <MobileCards v-else :rows="sorted" :levels="levels" />
     </main>
 
     <footer class="foot">
-      数据约每 5 分钟自动刷新:CF Rating/今日 · 牛客 Rating/总过题 浏览器实时抓取 ·
-      其余以仓库快照为准 ·
+      数据实时抓取 + 浏览器缓存:CF 各列直连官方 API · 牛客 Rating / 总过题数经 Cloudflare Worker 代理 ·
       名单维护:编辑 <code>public/data/members.json</code>
+      <div class="foot-repo">
+        <a href="https://github.com/Dddddduo/Bhu-Acm-Grade" target="_blank" rel="noopener">
+          GitHub:Dddddduo/Bhu-Acm-Grade
+        </a>
+        <span class="foot-copy">© BHUACM2026</span>
+      </div>
     </footer>
   </div>
 </template>
@@ -451,9 +463,16 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 }
 .star-chip em { font-style: normal; font-size: 15px; }
 .star-chip b { color: var(--green); }
-.star-chip small { color: var(--muted); font-size: 11.5px; }
 
-/* 综合得分规则说明 */
+/* 抓取提示条 */
+.notice {
+  background: #fff4f0; border: 1px solid #f3c9b5; border-radius: 12px;
+  padding: 10px 16px; margin-bottom: 14px; font-size: 13px; color: #9a3b12;
+  box-shadow: var(--shadow);
+}
+.notice-line + .notice-line { margin-top: 4px; }
+
+/* 数据口径说明 */
 .rules {
   background: var(--card); border-radius: 14px; padding: 0 16px;
   box-shadow: var(--shadow); margin-bottom: 14px; font-size: 13px;
@@ -466,15 +485,7 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 .rules summary::after { content: ' ▾'; font-size: 11px; color: var(--muted); }
 .rules[open] summary::after { content: ' ▴'; }
 .rules-body { padding: 4px 0 16px; border-top: 1px dashed var(--line); }
-.rule-bars { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 20px; margin: 12px 0; }
-.rule-bar { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
-.rb-label { width: 96px; color: var(--muted); flex: none; }
-.rb-track { flex: 1; height: 10px; border-radius: 999px; background: #eef1f8; overflow: hidden; }
-.rb-track i { display: block; height: 100%; border-radius: 999px; }
-.bar-nc { background: #2fa858; }
-.bar-cf { background: var(--accent); }
-.rb-pct { width: 38px; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
-.rule-notes { margin: 0; padding-left: 18px; color: var(--muted); line-height: 1.8; }
+.rule-notes { margin: 0; padding-left: 18px; color: var(--muted); line-height: 1.9; }
 .rule-notes code { background: #eef1f8; padding: 1px 6px; border-radius: 4px; color: #1c2233; }
 
 .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
@@ -495,6 +506,10 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 
 .foot { margin-top: 22px; color: var(--muted); font-size: 12px; text-align: center; }
 .foot code { background: #e4e9f4; padding: 1px 6px; border-radius: 4px; }
+.foot-repo { margin-top: 8px; display: flex; justify-content: center; align-items: center; gap: 14px; flex-wrap: wrap; }
+.foot-repo a { color: var(--accent); text-decoration: none; }
+.foot-repo a:hover { text-decoration: underline; }
+.foot-copy { color: #a5abc0; letter-spacing: 0.5px; }
 
 @media (max-width: 640px) {
   .hero-inner { padding: 0 20px; }

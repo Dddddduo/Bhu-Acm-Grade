@@ -1,71 +1,83 @@
 // ============================================================
-// 浏览器端定时抓牛客数据 —— 走本地 Node 代理,不直连 ac.nowcoder.com
+// 浏览器端实时获取牛客 Rating + 总过题数 —— 经 Cloudflare Worker 代理
+// (本机 npm run proxy 兜底已按需求移除,牛客数据只走 Worker)
 //
-// 为什么不直连(2026-10 实测):
-//  - 牛客页面虽然回显 CORS 头,但挂着阿里云 WAF:浏览器连续几十个跨站请求后
-//    直接返回滑块验证页(不带 CORS 头)-> fetch 报 Failed to fetch
-//  - 改由本地代理(npm run proxy)代抓:带浏览器 UA、串行 900ms 礼貌间隔、
-//    结果缓存,浏览器只面对 http://127.0.0.1:8787(代理回 ACAO: *)
+// 为什么必须服务端代理(实测结论 2026-10-20):
+//  rating-history 接口只要带跨站 Origin 头就被阿里云 WAF 拦成 JS 验证页
+//  (HTTP 200 但返回 HTML)。浏览器 fetch 一定发 Origin,绕不过去 ——
+//  跟 CORS 头无关,所以浏览器直连这条路是死的。
 //
-// 代理没开(比如线上 Pages 访客)怎么办:
-//  - 首轮连接失败 -> 之后整轮直接跳过,只安静用仓库快照数据,不刷屏报错
+// 数据口径:GET ${WORKER_URL}?uid=<牛客ID>
+//   -> { nc_rating: 最新 Rating, nc_total: 总过题数(首轮没抓全时为 null) }
+//   502 -> { error }  (无记录 / 上游被 WAF 拦)
 //
-// 解析在代理侧(scripts/ncProxy.js),和 fetchStats.js 同一套正则
+// 任何一个人失败:跳过,保留旧值,绝不清空(数据宁旧勿丢)
 // ============================================================
 
-const PROBASE = 'http://127.0.0.1:8787/api/nc?uid='
-const PROXY_TIMEOUT_MS = 8000
+// ★ 部署 Cloudflare Worker 后,地址填这里(scripts/ncWorker.js)
+const WORKER_URL = 'https://nc-proxy.1732446549.workers.dev/api/nc'
+const TIMEOUT_MS = 15000 // 代理上游要排队节流,给宽裕点
 
-let proxyDown = false // 代理连不上:置位后不再尝试,页面数据回落快照
-let firstErrorLogged = false
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-async function getNcViaProxy(uid) {
+let workerAlive = null // 本轮是否确认可用:null=没探过,true/false=探过
+
+function fetchJsonOnce(uid) {
   const ctl = new AbortController()
-  const timer = setTimeout(() => ctl.abort(), PROXY_TIMEOUT_MS)
-  try {
-    const res = await fetch(PROBASE + encodeURIComponent(uid), { signal: ctl.signal })
-    if (res.status === 400) {
-      // uid 非法(代理明确回复了 -> 代理是活的),这人跳过
-      return null
-    }
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}))
-      throw new Error(body.error || `代理返回 HTTP ${res.status}`)
-    }
-    return await res.json()
-  } finally {
-    clearTimeout(timer)
-  }
+  const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS)
+  return fetch(`${WORKER_URL}?uid=${encodeURIComponent(uid)}`, { signal: ctl.signal, cache: 'no-store' })
+    .then((res) => {
+      clearTimeout(timer)
+      if (!res.ok) {
+        const e = new Error(`HTTP ${res.status}`)
+        e.proxyErr = true // 代理活着但取数失败(上游被 WAF 拦等),502 也带 JSON 时会走这里
+        throw e
+      }
+      return res.json()
+    })
+    .catch((e) => {
+      clearTimeout(timer)
+      if (e.proxyErr) throw e
+      if (e.name === 'AbortError') {
+        const err = new Error('代理响应超时')
+        err.proxyErr = true
+        throw err
+      }
+      throw new Error(`连不上牛客 Worker 代理(${WORKER_URL})`)
+    })
 }
 
-// 返回 { 成员id: 补丁字段 } —— 调用方把它合并进实时 patch
-export async function fetchNcLive(members) {
-  if (proxyDown) return {}
+// 返回 { 成员id: 补丁字段 };onEach(id, rec) 每取完一个人立刻回调
+export async function fetchNcLive(members, onEach) {
   const withId = members.filter((m) => m.nowcoder_id)
+  if (!withId.length) return {}
+  workerAlive = null // 每轮重新探测
+
   const out = {}
+  let lastErr = null
   for (const m of withId) {
     try {
-      const rec = await getNcViaProxy(m.nowcoder_id)
-      if (rec && Object.keys(rec).length) {
-        out[String(m.id)] = rec
-        console.log(
-          `[live nc] ${m.name}(${m.nowcoder_id}) Rating=${rec.nc_rating ?? '—'} ` +
-            `排名=${rec.nc_rank ?? '—'} 已通过=${rec.nc_solved ?? '—'} ` +
-            `已挑战=${rec.nc_tried ?? '—'} 提交=${rec.nc_submits ?? '—'}`
-        )
+      const rec = await fetchJsonOnce(String(m.nowcoder_id))
+      workerAlive = true
+      const patch = {}
+      if (Number.isFinite(rec.nc_rating)) patch.nc_rating = Math.round(rec.nc_rating)
+      if (Number.isFinite(rec.nc_total)) patch.nc_total = Math.round(rec.nc_total)
+      if (Object.keys(patch).length) {
+        const id = String(m.id)
+        out[id] = { ...(out[id] || {}), ...patch }
+        if (onEach) onEach(id, patch)
       }
     } catch (e) {
-      // 单人失败(如被 WAF 盯上):跳过,保留旧值,宁旧勿丢
-      console.warn(`[live nc] ${m.name}(${m.nowcoder_id}) 保留旧值:`, e.message || e)
-      if (!firstErrorLogged && e instanceof TypeError) {
-        // 连不上代理(连接被拒等)-> 视为代理未启动,后续轮次直接跳过
-        firstErrorLogged = true
-        proxyDown = true
-        console.info('[live nc] 本地代理未启动(npm run proxy),牛客数据回落仓库快照')
-        return {}
+      // 连不上 Worker(非 HTTP 错误):整个代理当掉,别再逐个人撞墙,上抛让调用方提示
+      if (!e.proxyErr && workerAlive !== true) {
+        e.proxyDown = true
+        throw e
       }
+      lastErr = e
+      console.warn(`[live nc] ${m.name} 取数失败(保留旧值):`, e)
     }
+    await sleep(300) // 前端侧也留点间隔,配合代理节流
   }
-  if (Object.keys(out).length) console.info(`[live nc] 本轮经代理更新 ${Object.keys(out).length} 人`)
+  if (!Object.keys(out).length && lastErr) throw lastErr
   return out
 }

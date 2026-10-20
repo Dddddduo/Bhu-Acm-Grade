@@ -1,57 +1,73 @@
 // ============================================================
-// 综合得分(用户指定的权重,四项合计 100%):
-//   牛客 Rating   20%  +  牛客刷题数  10%
-//   CF   Rating   40%  +  CF  刷题数  30%
-//
-// CF Rating 取值:
-//   新生 = 当前 Rating;老登 = CF 最高分(毕业后不再打比赛,当前分会掉)
-//
-// 每个维度先换算成百分制分,再加权,不设上限,多刷多得:
-//   Rating  : rating / 24        —— 2400 分恰好折成 100,再高继续加
-//   刷题数  : 总通过题数 / 20     —— 2000 题恰好折成 100,再多继续加
-//   没有账号 / 没数据 = 该维度 0 分(权重不挪给别的维度,督促四个维度都有分)
-//
-// rowValue:表格排序/名次取值用 —— 综合分在行上(合并时算好),其余在 stats 里
+// 积分与评级(用户定的口径,2026-10-20):
+//  - CF 相关占 70 分:当前 Rating 30 / 最高 Rating 5 / 近30天做题 5 / 总做题 30
+//  - 牛客相关占 30 分:Rating 10 / 总过题 20
+//  - 每项 = min(指标值 / 上限, 1) × 权重;没数据的项按 0 计
+//  - 排名:有数据的人按总分降序,前 12% 金牌、再 24% 银牌、再 36% 铜牌(都向上取整),
+//    剩余的人以及完全没数据的人 = 未定级
+// 想调权重/上限,只改下面两个常量表即可。
 // ============================================================
 
-export const WEIGHTS = {
-  nc_rating: 0.2,
-  nc_solved: 0.1,
-  cf_rating: 0.4,
-  cf_total: 0.3,
+// key -> [权重, 归一化上限]
+const METRIC_WEIGHTS = {
+  cf_rating:     [30, 2400], // CF 当前分
+  cf_max_rating: [5, 2400], // CF 最高分
+  cf_30d:        [5, 100],  // CF 近 30 天 AC 题数
+  cf_total:      [30, 1500], // CF 总做题
+  nc_rating:     [15, 2400], // 牛客 Rating
+  nc_total:      [15, 1500], // 牛客总过题
 }
 
-// 换算基准:2400 Rating = 100 分,2000 题 = 100 分(只作除数,不是上限)
-export const RATING_UNIT = 24
-export const SOLVED_UNIT = 20
-
-function ratingScore(rating) {
-  const r = Number(rating)
-  if (!Number.isFinite(r) || r <= 0) return 0
-  return r / RATING_UNIT
+// 个人总分(0~100,保留 1 位小数);st = 该成员的实时数据补丁
+export function computeScore(st) {
+  let s = 0
+  for (const [k, [w, cap]] of Object.entries(METRIC_WEIGHTS)) {
+    const v = st?.[k]
+    if (typeof v === 'number' && Number.isFinite(v) && v > 0) s += Math.min(v / cap, 1) * w
+  }
+  return Math.round(s * 10) / 10
 }
 
-function solvedScore(n) {
-  const v = Number(n)
-  if (!Number.isFinite(v) || v <= 0) return 0
-  return v / SOLVED_UNIT
+// 是否"有数据":任何一个计分项是数字即算有,全空 -> 未定级(不占奖牌名额)
+export function hasData(st) {
+  return Object.keys(METRIC_WEIGHTS).some(
+    (k) => typeof st?.[k] === 'number' && Number.isFinite(st[k])
+  )
 }
 
-// group === 'old' 时 CF Rating 维度用历史最高分(cf_max_rating)参与评分
-export function weightedScore(stats, group) {
-  if (!stats) return 0
-  const cfRating = group === 'old' ? stats.cf_max_rating ?? stats.cf_rating : stats.cf_rating
-  // 保留两位小数:刚注册刷了题但还没 Rating 的新生得分很小,
-  // 一位小数会被抹成 0.0,看着像"没得分"
-  return +(
-    ratingScore(stats.nc_rating) * WEIGHTS.nc_rating +
-    solvedScore(stats.nc_solved) * WEIGHTS.nc_solved +
-    ratingScore(cfRating) * WEIGHTS.cf_rating +
-    solvedScore(stats.cf_total) * WEIGHTS.cf_total
-  ).toFixed(2)
+// 给一组行分配名次和奖牌等级。
+// rows: [{ member, stats }] —— 返回 Map<成员id, { rank, level }>
+// level: 'gold' | 'silver' | 'bronze' | 'unranked'
+export function assignLevels(rows) {
+  const ranked = rows
+    .filter((r) => hasData(r.stats))
+    .map((r) => ({ id: String(r.member.id), score: r.stats?.score ?? 0 }))
+    .sort((a, b) => b.score - a.score)
+
+  const n = ranked.length
+  const g = Math.ceil(n * 0.12)
+  const gs = g + Math.ceil(n * 0.24)
+  const gsb = gs + Math.ceil(n * 0.36)
+
+  const out = new Map()
+  let lastScore
+  let lastRank = 0
+  ranked.forEach((r, i) => {
+    // 并列同名次(1,2,2,4 式),奖牌按排位区间切
+    if (i === 0 || r.score !== lastScore) { lastRank = i + 1; lastScore = r.score }
+    const level = i < g ? 'gold' : i < gs ? 'silver' : i < gsb ? 'bronze' : 'unranked'
+    out.set(r.id, { rank: lastRank, level })
+  })
+  for (const r of rows) {
+    const id = String(r.member.id)
+    if (!out.has(id)) out.set(id, { rank: null, level: 'unranked' }) // 没数据的
+  }
+  return out
 }
 
-export function rowValue(row, key) {
-  if (key === 'score') return row.score ?? -Infinity
-  return row.stats?.[key] ?? -Infinity
+export const LEVEL_TEXT = {
+  gold: '金牌',
+  silver: '银牌',
+  bronze: '铜牌',
+  unranked: '未定级',
 }
