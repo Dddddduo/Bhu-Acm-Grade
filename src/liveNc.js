@@ -14,8 +14,10 @@
 // 任何一个人失败:跳过,保留旧值,绝不清空(数据宁旧勿丢)
 // ============================================================
 
-// ★ 部署 Cloudflare Worker 后,地址填这里(scripts/ncWorker.js)
-const WORKER_URL = 'https://nc-proxy.1732446549.workers.dev/api/nc'
+// ★ 部署代理后,地址填这里。两个二选一(接口完全一致,换后端只需改这一行):
+//   A. 腾讯云 Web 函数(当前在用,scripts/ncTencentScf.js)—— 默认域名大陆直连,免 VPN、免备案
+//   B. Cloudflare Worker(scripts/ncWorker.js)—— 但公共子域 *.workers.dev 被 GFW SNI 阻断,大陆需 VPN
+const WORKER_URL = 'https://1324011425-8utx28trdn.ap-guangzhou.tencentscf.com'
 const TIMEOUT_MS = 15000 // 代理上游要排队节流,给宽裕点
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

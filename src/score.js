@@ -12,9 +12,9 @@
 const METRIC_WEIGHTS = {
   cf_rating:     [30, 2400], // CF 当前分
   cf_max_rating: [5, 2400], // CF 最高分
-  cf_30d:        [5, 100],  // CF 近 30 天 AC 题数
+  cf_30d:        [10, 100],  // CF 近 30 天 AC 题数
   cf_total:      [30, 1500], // CF 总做题
-  nc_rating:     [15, 2400], // 牛客 Rating
+  nc_rating:     [10, 2400], // 牛客 Rating
   nc_total:      [15, 1500], // 牛客总过题
 }
 

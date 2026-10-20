@@ -58,13 +58,31 @@ scripts/ncWorker.js        ← 牛客代理 · Cloudflare Worker(牛客数据的
 > CF 接口浏览器直连,无需任何服务。牛客两列依赖 Worker:Worker 没配/挂了(或大陆网络访问
 > workers.dev 不通)时页面照常运行,牛客列显示未定级,CF 各列不受影响。
 
-**部署牛客代理(线上访客需要)**:
+**部署牛客代理(线上访客需要)** —— 两个后端二选一,接口完全一致(`GET <URL>?uid=...`),
+换后端只需改 `src/liveNc.js` 顶部的 `WORKER_URL`:
+
+| 方案 | 文件 | 大陆免 VPN? | 要求 |
+| --- | --- | --- | --- |
+| A. Cloudflare Worker | `scripts/ncWorker.js` | ❌ 公共子域 `*.workers.dev` 被 GFW SNI 阻断;**绑自有域名后 ✅** | CF 免费账号;要稳定服务大陆访客需备一个域名 |
+| B. 腾讯云云函数 SCF | `scripts/ncTencentScf.js` | ✅ 默认域名大陆直连 | 腾讯云账号,新建 **Web 函数**(事件函数已不支持 API 网关触发),有免费额度 |
+
+A(Cloudflare Worker):
 1. [dash.cloudflare.com](https://dash.cloudflare.com) → Workers & Pages → 新建 Worker;
 2. 把 `scripts/ncWorker.js` 全文粘贴进代码编辑器 → Deploy;
-3. 复制 `https://<名字>.<子域>.workers.dev` 地址,填进 `src/liveNc.js` 顶部的 `WORKER_URL`;
+3. 复制 `https://<名字>.<子域>.workers.dev` 地址,填进 `src/liveNc.js` 顶部的 `WORKER_URL`
+   (大陆免 VPN 访问请改绑自有域名,见 ncWorker.js 头注释);
 4. `npm run build` 后 push,重新部署 Pages 即生效。
-   **之后改过 `scripts/ncWorker.js` 必须重新粘贴 + Deploy 一次才生效**(Worker 不会自动跟仓库更新)。
-   详细步骤与大陆网络注意事项见 `scripts/ncWorker.js` 文件头注释。
+
+B(腾讯云 SCF Web 函数,~10 分钟,**当前线上在用**):
+1. [console.cloud.tencent.com/scf](https://console.cloud.tencent.com/scf) → 新建 **Web 函数**,Node.js 18.15+(必须 ≥18,代码用全局 fetch),区域上海/广州;
+2. 把 `scripts/ncTencentScf.js` 内容**全文替换**进 `index.js`(改过代码必须重新粘贴部署,不然线上还是旧版);
+3. 点「部署」;「触发方法/基本信息」里拿公网 HTTPS 域名 `https://<appid>-<随机>.<地域>.tencentscf.com`;
+4. URL 填进 `src/liveNc.js` 的 `WORKER_URL`,浏览器开 `<URL>?uid=619886673` 应回 `{"nc_rating":...,"nc_total":...}`;
+   加 `&debug=1` 回包带 `_v:"v4"`(400 时无条件带 `_v` 和 event 结构诊断)——没有 `_v` 就是还没部署 v4;
+5. `npm run build` 后 push。
+
+两种方式改过代理代码后都要**重新部署一次函数/Worker 才生效**(不会自动跟仓库更新)。
+详细步骤与大陆网络注意事项见两个脚本各自的文件头注释。
 
 ## 本地开发与部署
 

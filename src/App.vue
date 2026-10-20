@@ -211,7 +211,7 @@ async function refreshLive() {
       fetchNcLive(members.value, applyLive).catch((e) => {
         console.warn('[live] 牛客:', e)
         ncHint.value = e.proxyDown
-          ? '牛客列取数失败:请确认 Worker 代理已部署(见 README),之后重新粘贴 ncWorker.js 并 Deploy(CF 列不受影响)'
+          ? '牛客列取数失败:请确认代理已部署(见 README 方案 B:重新粘贴 ncTencentScf.js 并部署;浏览器开 <代理URL>?uid=619886673 回包带 _v:"v4" 或正常出数即为最新版。CF 列不受影响)'
           : '牛客 Rating 实时获取失败(下一轮自动重试)'
         return {}
       }),
@@ -375,7 +375,8 @@ const updatedText = computed(() => {
         <span class="count">共 {{ sorted.length }} 人</span>
       </div>
 
-      <h4><strong>积分总分</strong>:CF 占 70 分(当前 Rating 30% + 最高 Rating 5% + 近30天做题 5% + 总做题 30%),牛客占 30 分(Rating 15% + 总过题 25%);没数据的项按 0 计。</h4>
+      <h4><strong>积分总分：</strong><a href="https://codeforces.com/" target="_blank">Codeforces</a>占75分(当前Rating30%+最高Rating5%+近30天做题10%+总做题30%)，<a href="https://ac.nowcoder.com/" target="_blank">牛客</a>占25分(Rating10%+总过题15%)；无数据项按0计。</h4>
+
 
 
       <p v-if="loading" class="hint">加载名单…</p>
