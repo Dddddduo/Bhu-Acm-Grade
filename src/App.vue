@@ -142,6 +142,11 @@ const todayStars = computed(() => {
   })
   return out.slice(0, 3)
 })
+// 展示辅助(纯视觉,不改口径):前三合计、每人占今日总量的百分比
+const topSum = computed(() => todayStars.value.reduce((s, r) => s + r.today, 0))
+function sharePct(n) {
+  return todaySum.value ? Math.max(1, Math.round((n / todaySum.value) * 100)) : 0
+}
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -281,20 +286,40 @@ const updatedText = computed(() => {
   if (liveAt.value) return `更新于 ${new Date(liveAt.value).toLocaleString('zh-CN', { hour12: false })}`
   return '等待首轮抓取…'
 })
+
+// ---------- 顶部励志标语轮播(纯展示,不碰任何数据逻辑) ----------
+const TICKER_MS = 5000
+const TICKER_LINES = [
+  '今天的每一发 WA,都是在给明天的 AC 攒人品。',
+  'Rating 会波动,努力不会骗你。',
+  '题解看懂了不算会,独立 AC 才算数。',
+  '把会做的题全做对,就已经超过一半人。',
+  '别怕从零开始,榜单上每个人都曾是新人。',
+  '所有的一鸣惊人,都是厚积薄发。',
+  '今天不肯动脑,明天赛场流泪。',
+  '只做题不补题不利于成长。',
+  '分数没有意义，快乐才是真谛。',
+]
+const tickIdx = ref(Math.floor(Math.random() * TICKER_LINES.length)) // 随机开场,不永远从第一条看起
+let tickTimer = null
+onMounted(() => {
+  tickTimer = setInterval(() => { tickIdx.value = (tickIdx.value + 1) % TICKER_LINES.length }, TICKER_MS)
+})
+onUnmounted(() => clearInterval(tickTimer))
 </script>
 
 <template>
   <div class="page">
     <header class="hero">
       <div class="hero-inner">
-        <div>
-          <h1>
-            <span class="logo">⚡</span>
-            BUH ACM 程序设计工作室
-          </h1>
-          <p class="sub">竞赛成绩榜 · 一起卷,一起变强</p>
-        </div>
+        <h1>
+          <span class="logo">⚡</span>
+          BUH ACM 程序设计工作室
+          <span class="logo">⚡</span>
+        </h1>
         <div class="stamp">{{ updatedText }}</div>
+        <!-- 励志标语:占 hero 底部一整行 -->
+        <p class="ticker"><span class="ticker-q">“</span><Transition name="ticker-fade" mode="out-in"><span :key="tickIdx" class="ticker-line">{{ TICKER_LINES[tickIdx] }}</span></Transition><span class="ticker-q">”</span><span class="ticker-dots"><i v-for="(l, li) in TICKER_LINES" :key="li" :class="{ on: li === tickIdx }" @click="tickIdx = li" :title="l"></i></span></p>
       </div>
     </header>
 
@@ -329,15 +354,40 @@ const updatedText = computed(() => {
         </div>
       </section>
 
-      <!-- 今日之星:CF 今日做题数前 3 -->
-      <div v-if="todayStars.length" class="star-strip">
-        <span class="strip-tag">🌟 今日之星 TOP{{ todayStars.length }}</span>
-        <span v-for="s in todayStars" :key="s.member.id" class="star-chip">
-          <em>{{ ['🥇', '🥈', '🥉'][s.starRank - 1] }}</em>
-          {{ s.member.name }}
-          <b>{{ s.today }}</b> 题
-        </span>
-      </div>
+      <!-- 今日之星:CF 今日做题数前 3,podium 大卡,冠军居中放大;点卡直达 CF 主页 -->
+      <section v-if="todayStars.length" class="stars">
+        <div class="stars-head">
+          <span class="stars-title">🌟 今日之星</span>
+          <span class="stars-sub">今日 CF 已解 <b>{{ todaySum }}</b> 题,前三合计 <b>{{ topSum }}</b> 题 —— 向 TA 们看齐!</span>
+        </div>
+        <div class="podium">
+          <a
+            v-for="(s, i) in todayStars"
+            :key="s.member.id"
+            class="pod"
+            :class="'slot' + (i + 1)"
+            :href="s.member.cf_handle ? `https://codeforces.com/profile/${s.member.cf_handle}` : null"
+            target="_blank"
+            rel="noopener"
+            :title="`今日解 ${s.today} 题 · 点击查看 ${s.member.name} 的 Codeforces 主页`"
+          >
+            <span class="pod-medal">{{ ['🥇', '🥈', '🥉'][s.starRank - 1] }}</span>
+            <span class="pod-name">{{ s.member.name }}</span>
+            <span class="pod-class">{{ s.member.clazz }}</span>
+            <span class="pod-num">{{ s.today }}<small>题</small></span>
+            <span class="pod-bar"><i :style="{ width: sharePct(s.today) + '%' }"></i></span>
+            <span class="pod-share">占今日 {{ sharePct(s.today) }}%</span>
+          </a>
+        </div>
+      </section>
+      <!-- 今日还没人刷题:激励占位,这块永远不空 -->
+      <section v-else-if="!loading && groupMembers.length" class="stars empty-stars">
+        <span class="empty-crown">👑</span>
+        <div class="empty-text">
+          <b>今日之星 · 虚位以待</b>
+          <small>今天的第一个 AC,就能点亮这张卡片 —— 谁先来?</small>
+        </div>
+      </section>
 
       <!-- 抓取提示条:牛客代理 / CF 失败 -->
       <div v-if="ncHint || liveError" class="notice">
@@ -376,7 +426,9 @@ const updatedText = computed(() => {
         <span class="count">共 {{ sorted.length }} 人</span>
       </div>
 
-      <h4><strong>积分总分：</strong><a href="https://codeforces.com/" target="_blank">Codeforces</a>占75分(当前Rating30%+最高Rating5%+近30天做题10%+总做题30%)，<a href="https://ac.nowcoder.com/" target="_blank">牛客</a>占25分(Rating10%+总过题15%)；无数据项按0计。</h4>
+      <div class="score-explain">
+        <b>积分总分:</b><a href="https://codeforces.com/" target="_blank">Codeforces</a> 占 75 分(当前 Rating 30% + 最高 Rating 5% + 近30天做题 10% + 总做题 30%),<a href="https://ac.nowcoder.com/" target="_blank">牛客</a> 占 25 分(Rating 10% + 总过题 15%);无数据项按 0 计。
+      </div>
 
       <!-- 老登榜:不评奖牌,只列数据 -->
       <p v-if="group === 'old'" class="no-order-tip">📌 老登榜不评奖牌，<strong>排名不分先后</strong>；下方顺序仅为当前排序列的结果。</p>
@@ -423,12 +475,60 @@ const updatedText = computed(() => {
 }
 .hero-inner {
   max-width: 1440px; margin: 0 auto; padding: 0 40px;
-  display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  display: grid; grid-template-columns: 1fr; justify-items: center; gap: 14px;
+  position: relative;
 }
-.hero h1 { font-size: 24px; font-weight: 700; letter-spacing: 0.5px; display: flex; align-items: center; gap: 10px; }
-.logo { font-size: 26px; }
-.hero .sub { margin-top: 6px; font-size: 13px; opacity: 0.75; }
-.stamp { font-size: 12px; opacity: 0.8; background: rgba(255,255,255,0.12); padding: 5px 12px; border-radius: 999px; }
+/* 主标题:整行居中,加大加粗 + 金色下划线 */
+.hero h1 {
+  font-size: 30px; font-weight: 800; letter-spacing: 1.5px;
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  text-shadow: 0 2px 10px rgba(0,0,0,0.30);
+  position: relative; padding-bottom: 10px;
+}
+.hero h1::after {
+  content: ''; position: absolute; left: 50%; transform: translateX(-50%); bottom: 0;
+  width: 72px; height: 3px; border-radius: 999px;
+  background: linear-gradient(90deg, transparent, #ffd97a, #f5b629, transparent);
+}
+.logo { font-size: 30px; }
+
+/* 励志标语轮播:hero 底部独占一整行,5s 换一条,淡入淡出;小圆点可手动切换 */
+.ticker {
+  grid-column: 1 / -1; width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  position: relative;
+  min-height: 46px; padding: 10px 120px 10px 16px;
+  border-radius: 12px;
+  background: linear-gradient(90deg, rgba(255,255,255,0.06), rgba(255,255,255,0.16) 50%, rgba(255,255,255,0.06));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14);
+  font-size: 17px; line-height: 1.4; letter-spacing: 0.6px;
+  color: #fff; text-align: center;
+}
+/* 左侧金色竖条,强化"标语位"的存在感 */
+.ticker::before {
+  content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: linear-gradient(180deg, #ffd97a, #f5b629);
+}
+.ticker-q { font-size: 24px; opacity: 0.5; font-family: Georgia, serif; line-height: 1; }
+.ticker-line {
+  font-weight: 700; letter-spacing: 0.6px;
+  text-shadow: 0 1px 6px rgba(0,0,0,0.28);
+}
+.ticker-dots { display: inline-flex; gap: 5px; position: absolute; right: 18px; top: 50%; transform: translateY(-50%); }
+.ticker-dots i {
+  width: 6px; height: 6px; border-radius: 50%; cursor: pointer;
+  background: rgba(255,255,255,0.35); transition: all 0.25s;
+}
+.ticker-dots i:hover { background: rgba(255,255,255,0.8); }
+.ticker-dots i.on { background: #fff; width: 16px; border-radius: 999px; }
+.ticker-fade-enter-active, .ticker-fade-leave-active { transition: opacity 0.35s ease, transform 0.35s ease; }
+.ticker-fade-enter-from { opacity: 0; transform: translateY(6px); }
+.ticker-fade-leave-to { opacity: 0; transform: translateY(-6px); }
+.stamp {
+  position: absolute; top: 0; right: 40px;
+  font-size: 12px; opacity: 0.8; background: rgba(255,255,255,0.12); padding: 5px 12px; border-radius: 999px;
+}
 
 main { margin-top: -14px; position: relative; z-index: 2; }
 
@@ -451,22 +551,76 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 .sum-label { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 .sum-card.accent .sum-num { color: var(--green); }
 
-/* 今日之星 TOP3 */
-.star-strip {
-  background: linear-gradient(100deg, #fff8e6, var(--card) 60%);
-  border: 1px solid #f2dfae;
-  border-radius: 14px; padding: 12px 16px;
-  box-shadow: var(--shadow); margin-bottom: 14px;
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+/* 今日之星:podium 大卡区,金色渐变底,冠军居中放大 */
+.stars {
+  position: relative; overflow: hidden;
+  background:
+    radial-gradient(520px 180px at 50% -40px, rgba(255, 199, 64, 0.28), transparent 70%),
+    linear-gradient(135deg, #fffdf4 0%, var(--card) 55%);
+  border: 1.5px solid #f0d89a;
+  border-radius: 16px; padding: 16px 18px 18px;
+  box-shadow: 0 6px 22px rgba(160, 106, 0, 0.10);
+  margin-bottom: 14px;
 }
-.star-strip .strip-tag { font-size: 12px; font-weight: 700; color: #a06a00; margin-right: 4px; }
-.star-chip {
-  background: var(--card); border: 1px solid #ecd9a0;
-  border-radius: 999px; padding: 5px 14px; font-size: 13.5px;
-  display: inline-flex; align-items: center; gap: 6px;
+.stars::before { /* 顶部一道流动金线,强调“领奖台”氛围 */
+  content: ''; position: absolute; inset: 0 0 auto; height: 3px;
+  background: linear-gradient(90deg, transparent, #f5b629 30%, #ffd97a 50%, #f5b629 70%, transparent);
 }
-.star-chip em { font-style: normal; font-size: 15px; }
-.star-chip b { color: var(--green); }
+.stars-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.stars-title { font-size: 16px; font-weight: 800; color: #8a5800; letter-spacing: 1px; }
+.stars-sub { font-size: 12.5px; color: var(--muted); }
+.stars-sub b { color: var(--green); font-variant-numeric: tabular-nums; }
+
+.podium { display: grid; grid-template-columns: 1fr 1.25fr 1fr; gap: 12px; align-items: stretch; }
+.pod {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  border-radius: 14px; padding: 14px 10px 12px; text-decoration: none !important;
+  color: var(--text); border: 1px solid var(--line); background: var(--card);
+  box-shadow: 0 2px 10px rgba(28, 42, 90, 0.06);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  position: relative;
+}
+.pod:hover { transform: translateY(-3px); box-shadow: 0 8px 22px rgba(28, 42, 90, 0.14); }
+.pod-medal { font-size: 26px; line-height: 1; filter: drop-shadow(0 2px 3px rgba(160,106,0,0.25)); }
+.pod-name { font-size: 15px; font-weight: 700; margin-top: 4px; }
+.pod-class { font-size: 11.5px; color: var(--muted); }
+.pod-num { font-size: 30px; font-weight: 800; line-height: 1.15; font-variant-numeric: tabular-nums; color: var(--green); }
+.pod-num small { font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 2px; }
+.pod-bar { width: 78%; height: 5px; border-radius: 999px; background: #eef1f8; overflow: hidden; margin-top: 4px; }
+.pod-bar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #ffd97a, #f5b629); }
+.pod-share { font-size: 11px; color: #a06a00; margin-top: 3px; font-variant-numeric: tabular-nums; }
+
+/* 冠军居中:更大、金色描边、轻微呼吸光晕(按槽位算,并列名次也不会错位) */
+.pod.slot1 {
+  order: 2; border-color: #eec06a;
+  background: linear-gradient(180deg, #fffaf0, var(--card) 70%);
+  box-shadow: 0 4px 18px rgba(214, 158, 46, 0.22);
+  animation: pod-glow 2.6s ease-in-out infinite;
+}
+.pod.slot1 .pod-medal { font-size: 36px; }
+.pod.slot1 .pod-name { font-size: 17px; }
+.pod.slot1 .pod-num { font-size: 40px; }
+@keyframes pod-glow {
+  0%, 100% { box-shadow: 0 4px 18px rgba(214, 158, 46, 0.22); }
+  50% { box-shadow: 0 4px 26px rgba(214, 158, 46, 0.40); }
+}
+.pod.slot2 { order: 1; }
+.pod.slot3 { order: 3; }
+.pod.slot2 .pod-medal, .pod.slot3 .pod-medal { opacity: 0.92; }
+/* 今天只有 1 人刷题:单卡居中,不歪在左边 */
+.podium > .pod:only-child { grid-column: 1 / -1; max-width: 340px; margin: 0 auto; width: 100%; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pod.slot1 { animation: none; }
+  .pod { transition: none; }
+}
+
+/* 还没人刷题:虚位以待 */
+.empty-stars { display: flex; align-items: center; gap: 14px; padding: 18px; }
+.empty-crown { font-size: 30px; filter: grayscale(0.3); opacity: 0.8; }
+.empty-text { display: flex; flex-direction: column; gap: 2px; }
+.empty-text b { font-size: 15px; color: #8a5800; letter-spacing: 0.5px; }
+.empty-text small { font-size: 12.5px; color: var(--muted); }
 
 /* 抓取提示条 */
 .notice {
@@ -508,6 +662,14 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 .hint { padding: 40px; text-align: center; color: var(--muted); background: var(--card); border-radius: 14px; box-shadow: var(--shadow); }
 .hint.error { color: #d02020; }
 
+/* 积分口径说明:原来是裸 h4,收进卡片样式,和上方口径说明区呼应 */
+.score-explain {
+  background: var(--card); border-radius: 12px; padding: 11px 16px;
+  box-shadow: var(--shadow); margin-bottom: 14px; font-size: 13px;
+  color: var(--muted); line-height: 1.7;
+}
+.score-explain b { color: var(--text); }
+
 /* 老登榜「排名不分先后」提示条 */
 .no-order-tip {
   background: var(--card); border: 1px solid var(--line); border-radius: 12px;
@@ -525,7 +687,15 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 
 @media (max-width: 640px) {
   .hero-inner { padding: 0 20px; }
-  .hero h1 { font-size: 19px; }
+  .hero h1 { font-size: 20px; letter-spacing: 0.5px; gap: 8px; }
+  .logo { font-size: 20px; }
+  .hero h1::after { width: 52px; }
+  /* 窄屏标题占满宽度,时间胶囊改回正常流居中,避免压住标题 */
+  .stamp { position: static; }
+  /* 标语条:窄屏仍占整行,字号收小、圆点移到文字下方 */
+  .ticker { font-size: 14px; letter-spacing: 0.3px; padding: 9px 10px; flex-direction: column; gap: 6px; min-height: 0; }
+  .ticker-q { display: none; }
+  .ticker-dots { position: static; transform: none; }
   .summary { grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .sum-card { padding: 12px 8px; }
   .sum-num { font-size: 20px; }
@@ -534,5 +704,22 @@ main { margin-top: -14px; position: relative; z-index: 2; }
   .search { min-width: 0; flex-basis: 100%; }
   .count { width: 100%; }
   .tab { padding: 8px 16px; }
+  /* 今日之星:窄屏保持三列领奖台,整体缩小一档 */
+  .stars { padding: 12px 10px 14px; }
+  .stars-head { margin-bottom: 10px; gap: 8px; }
+  .stars-title { font-size: 14px; }
+  .stars-sub { font-size: 11.5px; }
+  .podium { gap: 8px; }
+  .pod { padding: 10px 4px 9px; }
+  .pod-medal { font-size: 20px; }
+  .pod.slot1 .pod-medal { font-size: 27px; }
+  .pod-name { font-size: 13px; }
+  .pod.slot1 .pod-name { font-size: 14.5px; }
+  .pod-class { display: none; }
+  .pod-num { font-size: 22px; }
+  .pod.slot1 .pod-num { font-size: 28px; }
+  .pod-bar { width: 88%; }
+  .empty-stars { padding: 14px; }
+  .empty-crown { font-size: 24px; }
 }
 </style>

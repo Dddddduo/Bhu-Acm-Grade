@@ -37,7 +37,10 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
-  background: var(--bg);
+  background:
+    radial-gradient(1100px 420px at 85% -80px, rgba(59, 108, 255, 0.10), transparent 60%),
+    linear-gradient(180deg, #f0f4fc 0%, #e8ecf6 100%);
+  background-attachment: fixed;
   color: var(--text);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
@@ -48,3 +51,14 @@ a:hover { text-decoration: underline; }
 
 button { font: inherit; cursor: pointer; }
 input, select { font: inherit; }
+
+::selection { background: rgba(59, 108, 255, 0.16); }
+
+/* 细滚动条,和卡片圆角配套 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #c3cde2; border-radius: 8px;
+  border: 2px solid transparent; background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #a9b6d4; background-clip: content-box; }
