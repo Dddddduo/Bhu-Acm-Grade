@@ -17,7 +17,9 @@ const PAGE = 10000 // user.status 单页上限内取大,减少翻页次数(实�
 const MAX_PAGES = 1 // 安全阀:单人最多翻 1 万条提交,再多只按已翻到的算
 
 let lastAt = 0
-async function getJson(url) {
+// 全站唯一的 CF 限速闸门:user.status / contest.list / contest.ratingChanges 都排队走这里
+// (官方限制 1 次/2s 是按 IP 算的,多开一条队列就会撞限)
+export async function getJson(url) {
   const wait = lastAt + GAP_MS - Date.now()
   if (wait > 0) await new Promise((r) => setTimeout(r, wait))
   lastAt = Date.now()
@@ -114,4 +116,97 @@ export async function fetchCfLive(members, onEach) {
     }
   }
   return out
+}
+
+// ============================================================
+// 近期比赛(contest.list?gym=false,匿名直连,一次请求)
+// 只收 Div.1 / Div.2 / Div.3 / Div.4 / 1+2 合一的轮;gym 与 IOI/ICPC 赛制一律排除。
+// 「已确认计分」用 contest.ratingChanges 实测(非空=计分),结论按 contestId 永久缓存;
+// 未开始的比赛按名称启发式标「预计计分」(CF API 赛前不给 rated 字段)。
+// 最多展示 RECENT_MAX 场,其余只计数提醒;抓失败返回 null(调用方保留旧值)。
+// ============================================================
+const RECENT_MAX = 5
+const FINISHED_WINDOW = 7 * 86400 // 已结束比赛只展示近 7 天的
+export const CONTEST_CACHE_KEY = 'bhu-acm-contest-cache-v1'
+
+function safeGet(key) {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+function safeSet(key, val) {
+  try {
+    localStorage.setItem(key, val)
+  } catch {
+    /* 存不进去就算了 */
+  }
+}
+
+// 名称匹配 Div.1 / Div.2 / Div.3 / Div.4 / 1+2 合一(逗号后缀也算,如 "(Div. 1, Based on …)")。
+// 别用 Contest.type 过滤:type 是计分制式(CF/IOI/ICPC),Educational、Div.3 常见 type=ICPC,
+// gym 已经由接口参数 gym=false 排除。
+export function isDivRound(name) {
+  return /\bDiv\. [1-4]\b/.test(name) || /Div\. 1 \+ Div\. 2/.test(name)
+}
+
+// 名称启发式:Div.1~4 / 1+2 的 CF 轮默认就是 rated;写了 Unrated / Practice 的不计
+export function ratedGuess(name) {
+  if (/unrated/i.test(name) || /\bpractice\b/i.test(name)) return false
+  return isDivRound(name)
+}
+
+// 返回 { contests, rest, fetchedAt };失败返回 null
+export async function fetchCfContests() {
+  try {
+    const d = await getJson(`${API}/contest.list?gym=false`)
+    if (d.status !== 'OK') throw new Error(d.comment || 'contest.list FAILED')
+    const now = Math.floor(Date.now() / 1000)
+    const all = d.result.filter((c) => Number.isFinite(c.startTimeSeconds) && isDivRound(c.name))
+    const upcoming = all
+      .filter((c) => ['BEFORE', 'CODING', 'SYSTEM_TEST', 'PENDING_SYSTEM_TEST'].includes(c.phase))
+      .sort((a, b) => a.startTimeSeconds - b.startTimeSeconds)
+    const past = all
+      .filter((c) => c.phase === 'FINISHED' && c.startTimeSeconds > now - FINISHED_WINDOW)
+      .sort((a, b) => b.startTimeSeconds - a.startTimeSeconds)
+
+    const show = [...upcoming, ...past].slice(0, RECENT_MAX)
+    const rest = upcoming.length + past.length - show.length
+    const ratingMap = await ensureRatingConfirmed(show)
+    return {
+      contests: show.map((c) => ({ ...c, ratingConfirmed: !!ratingMap[String(c.id)] })),
+      rest,
+      fetchedAt: Date.now(),
+    }
+  } catch (e) {
+    console.warn('[live cf] contest.list 失败(保留旧值):', e)
+    return null
+  }
+}
+
+// 已结束展示比赛的「确认计分」表:先读永久缓存,缺的用 contest.ratingChanges 补
+// (每轮最多 RECENT_MAX 个新请求,补到就缓存,后续轮次不再请求;单个失败当不计分,下轮重试)
+async function ensureRatingConfirmed(contests) {
+  let map = {}
+  try {
+    map = JSON.parse(safeGet(CONTEST_CACHE_KEY + '-rating')) || {}
+  } catch {
+    map = {}
+  }
+  const missing = contests.filter((c) => c.phase === 'FINISHED' && !(String(c.id) in map))
+  let changed = false
+  for (const c of missing) {
+    try {
+      const d = await getJson(`${API}/contest.ratingChanges?contestId=${c.id}`)
+      if (d.status === 'OK') {
+        map[String(c.id)] = Array.isArray(d.result) && d.result.length > 0
+        changed = true
+      }
+    } catch (e) {
+      console.warn(`[live cf] contest.ratingChanges ${c.id} 失败:`, e)
+    }
+  }
+  if (changed) safeSet(CONTEST_CACHE_KEY + '-rating', JSON.stringify(map))
+  return map
 }

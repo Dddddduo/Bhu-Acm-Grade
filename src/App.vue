@@ -12,7 +12,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import RankTable from './components/RankTable.vue'
 import MobileCards from './components/MobileCards.vue'
 import { COLUMNS } from './columns.js'
-import { fetchCfLive } from './liveCf.js'
+import { fetchCfLive, fetchCfContests, ratedGuess, CONTEST_CACHE_KEY } from './liveCf.js'
 import { fetchNcLive } from './liveNc.js'
 import { computeScore, assignLevels } from './score.js'
 
@@ -85,6 +85,69 @@ function onResize() {
 }
 onMounted(() => window.addEventListener('resize', onResize))
 onUnmounted(() => window.removeEventListener('resize', onResize))
+
+// ---------- 近期比赛(Div.1~4 / 1+2,不含 gym) ----------
+// contests: { id, name, phase, startTimeSeconds, durationSeconds, ratingConfirmed } 最多 5 条;
+// restCount: 窗口内没展示出来的场数,只做数字提醒。
+// 「可计算 Rating」标注:已结束的以 contest.ratingChanges 实锤为准(ratingConfirmed),
+// 未结束的按名称启发式预估(ratedGuess),文案区分「计分 / 预计计分」。
+const contests = ref([])
+const restCount = ref(0)
+const contestsAt = ref(0) // 最近一次比赛数据更新时间戳
+const CONTEST_EVERY_MS = 30 * 60 * 1000 // 比赛列表变化慢,单独 30 分钟 TTL(成员缓存没过期时也会补抓)
+
+function loadContestCache() {
+  try {
+    const c = JSON.parse(localStorage.getItem(CONTEST_CACHE_KEY))
+    if (c && Array.isArray(c.list) && Number.isFinite(c.at) && c.at <= Date.now()) {
+      contests.value = c.list
+      restCount.value = c.rest || 0
+      contestsAt.value = c.at
+    }
+  } catch {
+    /* 没缓存就用空的 */
+  }
+}
+function saveContestCache() {
+  try {
+    localStorage.setItem(
+      CONTEST_CACHE_KEY,
+      JSON.stringify({ at: contestsAt.value, list: contests.value, rest: restCount.value })
+    )
+  } catch {
+    /* 存不进去就算了 */
+  }
+}
+
+async function refreshContests() {
+  if (contestsAt.value && Date.now() - contestsAt.value < CONTEST_EVERY_MS) return // 比赛缓存没超期,不重抓
+  const r = await fetchCfContests()
+  if (!r) return // 失败保留旧值,绝不清空
+  contests.value = r.contests
+  restCount.value = r.rest
+  contestsAt.value = r.fetchedAt
+  saveContestCache()
+}
+
+// 北京时间「MM月d日 HH:mm」;跨天的加「周X」帮判断别记错
+function fmtCfTime(sec) {
+  const d = new Date((sec + 8 * 3600) * 1000)
+  const pad = (n) => String(n).padStart(2, '0')
+  const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getUTCDay()]
+  return `${pad(d.getUTCMonth() + 1)}月${pad(d.getUTCDate())}日 ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} · ${week}`
+}
+function phaseText(phase) {
+  return phase === 'FINISHED' ? '已结束' : phase === 'CODING' ? '进行中' : '即将开始'
+}
+function contestUrl(id) {
+  return `https://codeforces.com/contests/${id}`
+}
+function ratedTag(c) {
+  if (c.phase === 'FINISHED')
+    return c.ratingConfirmed ? { t: '计Rating分', cls: 'yes' } : { t: '不计分', cls: 'no' }
+  return ratedGuess(c.name) ? { t: '计Rating分', cls: 'maybe' } : { t: '预计不计分', cls: 'no' }
+}
+const ratedContestCount = computed(() => contests.value.filter((c) => ratedTag(c).cls !== 'no').length)
 
 const visibleColumns = computed(() => COLUMNS.filter((c) => !c.hidden))
 
@@ -207,6 +270,8 @@ async function refreshLive() {
   liveBusy.value = true
   liveError.value = ''
   ncHint.value = ''
+  // 近期比赛:独立一次请求(共用限速闸门),不拖累成员数据,失败静默保留旧值
+  refreshContests().catch((e) => console.warn('[live] contests:', e))
   try {
     const [cf, nc] = await Promise.all([
       fetchCfLive(members.value, applyLive).catch((e) => {
@@ -264,6 +329,9 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+  loadContestCache() // 比赛区先带缓存渲染,不等抓取
+  // 比赛列表独立于成员数据:即便成员缓存在效期内不重抓,这里也按自己的 TTL 补一轮
+  refreshContests().catch((e) => console.warn('[live] contests:', e))
   if (!members.value.length) return
 
   const cached = loadCache()
@@ -387,6 +455,37 @@ onUnmounted(() => clearInterval(tickTimer))
           <b>今日之星 · 虚位以待</b>
           <small>今天的第一个 AC,就能点亮这张卡片 —— 谁先来?</small>
         </div>
+      </section>
+
+      <!-- 近期比赛:CF 正式轮(Div.1~4 / 1+2),不含 gym;最多 5 场,其余只提醒数量 -->
+      <section v-if="contests.length" class="contests">
+        <div class="ctests-head">
+          <span class="ctests-title">📅 近期比赛</span>
+          <span class="ctests-sub">
+            Codeforces 正式轮(Div.1~4 / 1+2,不含 Gym)·
+            <b>{{ ratedContestCount }}</b> 场可计算 Codeforces Rating<template v-if="restCount"> · 另有 {{ restCount }} 场未列出</template>
+          </span>
+        </div>
+        <ul class="ctests-list">
+          <li v-for="c in contests" :key="c.id" class="ctest">
+            <span class="ctest-phase" :class="{ live: c.phase === 'CODING', done: c.phase === 'FINISHED' }">
+              {{ phaseText(c.phase) }}
+            </span>
+            <div class="ctest-main">
+              <a class="ctest-name" :href="contestUrl(c.id)" target="_blank" rel="noopener" :title="`点击进入 Codeforces 比赛页(第 ${c.id} 场)`">
+                {{ c.name }} <span class="ctest-ext">↗</span>
+              </a>
+              <span class="ctest-time">🕐 {{ fmtCfTime(c.startTimeSeconds) }}<template v-if="c.phase !== 'FINISHED'"> · 时长 {{ Math.round(c.durationSeconds / 3600 * 10) / 10 }}h</template></span>
+            </div>
+            <span class="ctest-rated" :class="ratedTag(c).cls" :title="ratedTag(c).cls === 'maybe' ? '按赛制惯例预估,CF 赛前不公布 rated 状态' : ''">
+              {{ ratedTag(c).t }}
+            </span>
+          </li>
+        </ul>
+        <p v-if="restCount" class="ctest-more">
+          另有 {{ restCount }} 场未展示(只保留最近 5 场,打完的超过 7 天自动移出列表)——
+          <a href="https://codeforces.com/contests" target="_blank" rel="noopener">全部比赛 ↗</a>
+        </p>
       </section>
 
       <!-- 抓取提示条:牛客代理 / CF 失败 -->
@@ -623,6 +722,42 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 .empty-text b { font-size: 15px; color: #8a5800; letter-spacing: 0.5px; }
 .empty-text small { font-size: 12.5px; color: var(--muted); }
 
+/* 近期比赛 */
+.contests {
+  background: var(--card); border-radius: 14px; padding: 14px 18px;
+  box-shadow: var(--shadow); margin-bottom: 14px;
+}
+.ctests-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.ctests-title { font-size: 15px; font-weight: 800; color: var(--accent); letter-spacing: 0.5px; }
+.ctests-sub { font-size: 12.5px; color: var(--muted); }
+.ctests-sub b { color: var(--green); }
+.ctests-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.ctest {
+  display: grid; grid-template-columns: 76px 1fr auto; align-items: center; gap: 12px;
+  border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px;
+  background: #fbfcff;
+}
+.ctest-phase { font-size: 11.5px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 3px 0; text-align: center; }
+.ctest-phase.live { color: #fff; background: var(--green); animation: ctest-pulse 1.6s ease-in-out infinite; }
+.ctest-phase.done { color: var(--muted); background: #eef1f8; }
+@keyframes ctest-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.ctest-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ctest-name {
+  font-size: 14px; font-weight: 700; color: var(--text); text-decoration: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ctest-name:hover { color: var(--accent); text-decoration: underline; }
+.ctest-ext { font-size: 11px; color: var(--muted); }
+.ctest-time { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ctest-rated { font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+.ctest-rated.yes { color: var(--green); background: var(--green-soft); }
+.ctest-rated.maybe { color: #8a5800; background: #fff6e0; }
+.ctest-rated.no { color: var(--muted); background: #eef1f8; }
+.ctest-more { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+.ctest-more a { color: var(--accent); text-decoration: none; }
+.ctest-more a:hover { text-decoration: underline; }
+@media (prefers-reduced-motion: reduce) { .ctest-phase.live { animation: none; } }
+
 /* 抓取提示条 */
 .notice {
   background: #fff4f0; border: 1px solid #f3c9b5; border-radius: 12px;
@@ -728,5 +863,14 @@ main { margin-top: -14px; position: relative; z-index: 2; }
   .pod-bar { width: 88%; }
   .empty-stars { padding: 14px; }
   .empty-crown { font-size: 24px; }
+  /* 近期比赛:窄屏两行排版,徽章与计分标签各就各位 */
+  .contests { padding: 12px; }
+  .ctests-head { margin-bottom: 8px; gap: 6px; }
+  .ctests-title { font-size: 13.5px; }
+  .ctests-sub { font-size: 11px; }
+  .ctest { grid-template-columns: 62px 1fr; gap: 8px; padding: 8px 10px; }
+  .ctest-rated { grid-column: 2; justify-self: start; }
+  .ctest-name { font-size: 13px; }
+  .ctest-time { font-size: 11px; }
 }
 </style>
