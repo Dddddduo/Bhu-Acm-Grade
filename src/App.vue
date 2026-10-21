@@ -346,11 +346,11 @@ onUnmounted(() => clearInterval(tickTimer))
         </div>
         <div class="sum-card accent">
           <div class="sum-num">{{ todayActive.length }}</div>
-          <div class="sum-label">今日已刷题(CF)</div>
+          <div class="sum-label">今日Codeforces已刷题人数</div>
         </div>
         <div class="sum-card">
           <div class="sum-num">{{ todaySum }}</div>
-          <div class="sum-label">今日合计题数</div>
+          <div class="sum-label">今日Codeforces合计题数</div>
         </div>
       </section>
 
@@ -427,7 +427,7 @@ onUnmounted(() => clearInterval(tickTimer))
       </div>
 
       <div class="score-explain">
-        <b>积分总分:</b><a href="https://codeforces.com/" target="_blank">Codeforces</a> 占 75 分(当前 Rating 30% + 最高 Rating 5% + 近30天做题 10% + 总做题 30%),<a href="https://ac.nowcoder.com/" target="_blank">牛客</a> 占 25 分(Rating 10% + 总过题 15%);无数据项按 0 计。
+        <b>积分总分:</b><a href="https://codeforces.com/" target="_blank">Codeforces</a> 占 75 分(当前 Rating 30% + 最高 Rating 5% + 近30天做题 10% + 总做题 30%),<a href="https://ac.nowcoder.com/" target="_blank">牛客</a> 占 25 分(Rating 10% + 总过题 15%);无数据项按 0 计。(codeforces刷题占比比重较大)
       </div>
 
       <!-- 老登榜:不评奖牌,只列数据 -->
