@@ -16,7 +16,7 @@ import { fetchCfLive } from './liveCf.js'
 import { fetchNcLive } from './liveNc.js'
 import { computeScore, assignLevels } from './score.js'
 
-const LIVE_EVERY_MS = 30 * 60 * 1000 // 每 30 分钟自动抓一轮(缓存在这之内直接复用,不重抓)
+const LIVE_EVERY_MS = 10 * 60 * 1000 // 每 10 分钟自动抓一轮(缓存在这之内直接复用,不重抓)
 const CACHE_KEY = 'bhu-acm-live-cache-v1'
 
 const members = ref([])
@@ -183,7 +183,7 @@ async function loadJson(path) {
   return res.json()
 }
 
-// ---------- 浏览器端定时抓取(30 分钟一轮 + localStorage 缓存) ----------
+// ---------- 浏览器端定时抓取(10 分钟一轮 + localStorage 缓存) ----------
 // CF 官方 API 允许跨域(实测 ACAO: *)直连抓;牛客 rating-history 对跨站 Origin
 // 会被 WAF 拦(实测),必须经 Cloudflare Worker 代理(见 liveNc.js)。
 // 两家并发、各自内部有自己的限速闸门,互不干扰;
@@ -314,7 +314,7 @@ onUnmounted(() => clearInterval(tickTimer))
       <div class="hero-inner">
         <h1>
           <span class="logo">⚡</span>
-          BUH ACM 程序设计工作室
+          北华大学程序设计工作室BHU-ACM榜单系统
           <span class="logo">⚡</span>
         </h1>
         <div class="stamp">{{ updatedText }}</div>
@@ -406,7 +406,7 @@ onUnmounted(() => clearInterval(tickTimer))
             <li><strong>CF 今日</strong>:北京时间今日 0 点起 AC 的不同题目数;今天还没抓到就显示<strong>未定级</strong>,绝不拿昨天的数冒充。</li>
             <li><strong>牛客 Rating</strong>:牛客 <code>rating-history</code> 接口最新一条记录的 Rating。该接口对带跨站 Origin 的请求会被 WAF 拦截,浏览器无法直连,经服务端代理(腾讯云 SCF Web 函数)获取。</li>
             <li><strong>牛客总过题</strong>:牛客个人主页官方统计「题已通过」数(按题目去重的 AC 题数,同一题反复 AC 只算一次,与 CF 总做题同口径),经代理读取,约每 10 分钟更新。</li>
-            <li>数据缓存在浏览器里:打开页面先显示缓存,超过 30 分钟才自动重抓;页面开着每 30 分钟更新一轮。某人抓失败只跳过他(保留旧值),不影响别人。</li>
+            <li>数据缓存在浏览器里:打开页面先显示缓存,超过 10 分钟才自动重抓;页面开着每 10 分钟更新一轮。某人抓失败只跳过他(保留旧值),不影响别人。</li>
             <li>默认排序:新生按<strong>总分</strong>,老登按 <strong>CF 最高分</strong>(仅排列展示,不代表名次——老登榜排名不分先后);点表头可按任意列单独排序。🌟 今日之星:按当天 CF 做题数取前 3。</li>
           </ul>
         </div>
@@ -452,6 +452,7 @@ onUnmounted(() => clearInterval(tickTimer))
     </main>
 
     <footer class="foot">
+      <div class="foot-made">🛠️ 由北华大学程序设计工作室自研</div>
       数据实时抓取 + 浏览器缓存:CF 各列直连官方 API · 牛客 Rating / 总过题数经服务端代理(腾讯云 SCF)·
       名单维护:编辑 <code>public/data/members.json</code>
       <div class="foot-repo">
@@ -679,6 +680,12 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 .no-order-tip strong { color: var(--accent); }
 
 .foot { margin-top: 22px; color: var(--muted); font-size: 12px; text-align: center; }
+.foot-made {
+  display: inline-block; margin-bottom: 10px; padding: 5px 16px;
+  border-radius: 999px; font-size: 12.5px; font-weight: 600; letter-spacing: 0.5px;
+  color: var(--accent); background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px rgba(59, 108, 255, 0.18);
+}
 .foot code { background: #e4e9f4; padding: 1px 6px; border-radius: 4px; }
 .foot-repo { margin-top: 8px; display: flex; justify-content: center; align-items: center; gap: 14px; flex-wrap: wrap; }
 .foot-repo a { color: var(--accent); text-decoration: none; }
