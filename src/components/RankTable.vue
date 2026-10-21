@@ -119,7 +119,6 @@ function todayClass(v) {
   border-radius: 16px;
   overflow: auto; /* 保险:极窄窗口仍能看,常规宽度不会出横向滚动条 */
   box-shadow: var(--shadow);
-  max-height: 78vh;
 }
 /* 页面已加宽到 1440,列全部塞进一屏;不写 min-width,表格自适应不留横向滚动 */
 table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: auto; }
