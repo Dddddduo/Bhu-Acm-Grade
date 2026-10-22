@@ -35,5 +35,6 @@
   { "id": 34, "group": "old", "name": "杨佳多", "clazz": "计科24-1",    "student_id": "", "nowcoder_id": "251173666",  "cf_handle": "Litar" },
   { "id": 35, "group": "old", "name": "张鑫", "clazz": "计科23-2",    "student_id": "", "nowcoder_id": "584331662",  "cf_handle": "baicheng" },
   { "id": 36, "group": "old", "name": "余锐", "clazz": "计icc25-2",    "student_id": "", "nowcoder_id": "722655696",  "cf_handle": "YYYRRRM" },
-  { "id": 37, "group": "old", "name": "柴梦娇", "clazz": "计25-2",    "student_id": "", "nowcoder_id": "444642051",  "cf_handle": "Victoria_Isabelle" }
+  { "id": 37, "group": "old", "name": "柴梦娇", "clazz": "计25-2",    "student_id": "", "nowcoder_id": "444642051",  "cf_handle": "Victoria_Isabelle" },
+  { "id": 38, "group": "old", "name": "黄文楷", "clazz": "软件24-3",    "student_id": "", "nowcoder_id": "131119498",  "cf_handle": "hhhkai" }
 ]
