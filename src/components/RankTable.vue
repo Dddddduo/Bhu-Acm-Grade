@@ -32,7 +32,7 @@ function todayClass(v) {
 
 <template>
   <div class="table-wrap">
-    <table>
+    <table :key="sortKey + sortDir">
       <thead>
         <tr>
           <th v-if="showMedals" class="col-rank sticky-col">评级</th>
@@ -135,7 +135,23 @@ th, td {
 th { font-size: 12px; }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:nth-child(even) { background: #fafbff; }
+tbody tr { transition: background 0.25s ease; }
 tbody tr:hover { background: var(--accent-soft); }
+/* ★ 悬停行:头像+姓名、数字、奖牌、段位徽章整体放大 —— 幅度给足、带轻微过冲回弹,过渡丝滑醒目
+   transform 不挤动布局;吸附列是 sticky,scale 照常生效 */
+.who, .num, .pill, .rank-cell, .tier-badge, .avatar {
+  transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.25s ease, box-shadow 0.3s ease;
+}
+.num { display: inline-block; } /* 内联元素不吃 transform,升 inline-block */
+tbody tr:hover .who { transform: scale(1.22); }             /* 头像和姓名明显放大 */
+tbody tr:hover .num,
+tbody tr:hover .pill,
+tbody tr:hover .rank-cell,
+tbody tr:hover .tier-badge { transform: scale(1.32); }      /* 数据列明显放大 */
+tbody tr:hover .num { color: var(--accent); font-weight: 800; }
+tbody tr:hover .avatar { box-shadow: 0 0 0 2px #fff, 0 0 0 5px var(--accent), 0 4px 14px rgba(59,108,255,0.35); } /* 头像高亮环 + 投影 */
+tbody tr:hover .who-text b { color: var(--accent); }        /* 姓名变主色 */
+tbody tr:hover .pill.active { box-shadow: 0 3px 10px rgba(18,161,80,0.3); }
 
 thead th {
   position: sticky; top: 0; z-index: 3;
@@ -155,7 +171,12 @@ tbody tr:nth-child(even) .sticky-col { background: #fafbff; }
 tbody tr:hover .sticky-col { background: var(--accent-soft); }
 
 .col-metric { cursor: pointer; user-select: none; }
-.col-metric:hover { color: var(--accent); }
+/* 排序变化时整个表体重新挂载(:key 绑定 sortKey+sortDir),做一次轻滑入,排序结果"落定"更直观 */
+tbody { animation: tbody-in 0.32s cubic-bezier(0.22, 1, 0.36, 1); }
+@keyframes tbody-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}.col-metric:hover { color: var(--accent); }
 .col-metric.active { color: var(--accent); }
 .col-metric.hot { color: var(--green); }
 .arrow { font-size: 10px; margin-left: 2px; }
@@ -197,4 +218,8 @@ tbody tr:hover .sticky-col { background: var(--accent-soft); }
 
 /* 列全部常显(全量数据);窗口不够宽时靠 .table-wrap 横向滚动兜底,
    再窄(<760)整表换成卡片视图(见 MobileCards) */
+@media (prefers-reduced-motion: reduce) {
+  tbody { animation: none; }
+  .who, .num, .pill, .rank-cell, .tier-badge, .avatar, tbody tr { transition: none; }
+}
 </style>

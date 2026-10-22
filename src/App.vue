@@ -11,6 +11,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import RankTable from './components/RankTable.vue'
 import MobileCards from './components/MobileCards.vue'
+import CountUp from './components/CountUp.vue'
 import { COLUMNS } from './columns.js'
 import { fetchCfLive, fetchCfContests, ratedGuess, CONTEST_CACHE_KEY } from './liveCf.js'
 import { fetchNcLive } from './liveNc.js'
@@ -148,6 +149,43 @@ function ratedTag(c) {
   return ratedGuess(c.name) ? { t: '计Rating分', cls: 'maybe' } : { t: '预计不计分', cls: 'no' }
 }
 const ratedContestCount = computed(() => contests.value.filter((c) => ratedTag(c).cls !== 'no').length)
+
+// ---------- 比赛倒计时:每秒一跳,实时显示「距开始/距结束 还有 X天X小时X分X秒」 ----------
+// 一个 ref 当秒针,模板里所有倒计时都读它 -> Vue 每秒精准重渲染这几个 span
+const nowTick = ref(Date.now())
+let cdTimer = null
+onMounted(() => {
+  cdTimer = setInterval(() => { nowTick.value = Date.now() }, 1000)
+})
+onUnmounted(() => {
+  if (cdTimer) clearInterval(cdTimer)
+})
+
+// 剩余秒数 -> 「X天X小时X分X秒」(高位为 0 就省略,最简只留「X秒」)
+function fmtRemain(sec) {
+  let s = Math.max(0, Math.floor(sec))
+  const d = Math.floor(s / 86400); s -= d * 86400
+  const h = Math.floor(s / 3600);  s -= h * 3600
+  const m = Math.floor(s / 60);    s -= m * 60
+  const parts = []
+  if (d) parts.push(`${d}天`)
+  if (d || h) parts.push(`${h}小时`)
+  if (d || h || m) parts.push(`${m}分`)
+  parts.push(`${s}秒`)
+  return parts.join('')
+}
+
+// 一场比赛的倒计时:{ label, value, remain, live } —— 没开 -> 距开始;正在打 -> 距结束(红色警示);打完 -> null(不显示)
+function cdOf(c) {
+  const now = nowTick.value
+  if (c.phase === 'FINISHED') return null
+  const start = c.startTimeSeconds * 1000
+  const end = (c.startTimeSeconds + c.durationSeconds) * 1000
+  if (now < start) return { label: '距开始', value: fmtRemain((start - now) / 1000), remain: (start - now) / 1000, live: false }
+  if (now < end) return { label: '距结束', value: fmtRemain((end - now) / 1000), remain: (end - now) / 1000, live: true }
+  // phase 缓存还没翻成 FINISHED 的窗口期:已结束就不显示倒计时,避免显示负数/0
+  return null
+}
 
 const visibleColumns = computed(() => COLUMNS.filter((c) => !c.hidden))
 
@@ -368,7 +406,7 @@ const TICKER_LINES = [
   '只做题不补题不利于成长。',
   '分数没有意义，快乐才是真谛。',
 ]
-const tickIdx = ref(Math.floor(Math.random() * TICKER_LINES.length)) // 随机开场,不永远从第一条看起
+const tickIdx = ref(Math.floor(Math.random() * TICKER_LINES.length))
 let tickTimer = null
 onMounted(() => {
   tickTimer = setInterval(() => { tickIdx.value = (tickIdx.value + 1) % TICKER_LINES.length }, TICKER_MS)
@@ -381,11 +419,11 @@ onUnmounted(() => clearInterval(tickTimer))
     <header class="hero">
       <div class="hero-inner">
         <h1>
-          <span class="logo">⚡</span>
-          北华大学程序设计工作室BHU-ACM榜单系统
-          <span class="logo">⚡</span>
+          <span class="logo zap zap-l">⚡</span>
+          <span class="title-text">北华大学程序设计工作室<b class="title-accent">BHU-ACM</b>榜单系统</span>
+          <span class="logo zap zap-r">⚡</span>
         </h1>
-        <div class="stamp">{{ updatedText }}</div>
+        <div class="stamp" :class="{ busy: liveBusy }">{{ updatedText }}</div>
         <!-- 励志标语:占 hero 底部一整行 -->
         <p class="ticker"><span class="ticker-q">“</span><Transition name="ticker-fade" mode="out-in"><span :key="tickIdx" class="ticker-line">{{ TICKER_LINES[tickIdx] }}</span></Transition><span class="ticker-q">”</span><span class="ticker-dots"><i v-for="(l, li) in TICKER_LINES" :key="li" :class="{ on: li === tickIdx }" @click="tickIdx = li" :title="l"></i></span></p>
       </div>
@@ -406,18 +444,18 @@ onUnmounted(() => clearInterval(tickTimer))
         </button>
       </nav>
 
-      <!-- 今日概览:CF 今日做题口径 -->
+      <!-- 今日概览:CF 今日做题口径(数字滚动,抓取实时更新时不硬闪) -->
       <section class="summary">
         <div class="sum-card">
-          <div class="sum-num">{{ groupMembers.length }}</div>
+          <div class="sum-num"><CountUp :value="groupMembers.length" /></div>
           <div class="sum-label">{{ group === 'fresh' ? '在册新生' : '在册老登' }}</div>
         </div>
         <div class="sum-card accent">
-          <div class="sum-num">{{ todayActive.length }}</div>
+          <div class="sum-num"><CountUp :value="todayActive.length" /></div>
           <div class="sum-label">今日Codeforces已刷题人数</div>
         </div>
         <div class="sum-card">
-          <div class="sum-num">{{ todaySum }}</div>
+          <div class="sum-num"><CountUp :value="todaySum" /></div>
           <div class="sum-label">今日Codeforces合计题数</div>
         </div>
       </section>
@@ -442,9 +480,14 @@ onUnmounted(() => clearInterval(tickTimer))
             <span class="pod-medal">{{ ['🥇', '🥈', '🥉'][s.starRank - 1] }}</span>
             <span class="pod-name">{{ s.member.name }}</span>
             <span class="pod-class">{{ s.member.clazz }}</span>
-            <span class="pod-num">{{ s.today }}<small>题</small></span>
+            <span class="pod-num"><CountUp :value="s.today" /><small>题</small></span>
             <span class="pod-bar"><i :style="{ width: sharePct(s.today) + '%' }"></i></span>
             <span class="pod-share">占今日 {{ sharePct(s.today) }}%</span>
+            <span class="pod-total" title="该成员 Codeforces 历史累计 AC 的不同题目数">
+              CF 总过题
+              <b v-if="s.stats?.cf_total != null"><CountUp :value="s.stats.cf_total" /></b>
+              <b v-else class="unknown">未定级</b>
+            </span>
           </a>
         </div>
       </section>
@@ -476,6 +519,17 @@ onUnmounted(() => clearInterval(tickTimer))
                 {{ c.name }} <span class="ctest-ext">↗</span>
               </a>
               <span class="ctest-time">🕐 {{ fmtCfTime(c.startTimeSeconds) }}<template v-if="c.phase !== 'FINISHED'"> · 时长 {{ Math.round(c.durationSeconds / 3600 * 10) / 10 }}h</template></span>
+              <!-- 实时倒计时:秒级跳动;24 小时内开场高亮提醒,正在打变红「距结束」 -->
+              <span
+                v-if="cdOf(c)"
+                class="ctest-cd"
+                :class="{ soon: !cdOf(c).live && cdOf(c).remain < 86400, 'cd-live': cdOf(c).live }"
+                :title="cdOf(c).live ? '比赛正在进行,这是剩余时间' : '距比赛开始还有(实时倒计时)'"
+              >
+                <span class="cd-label">{{ cdOf(c).label }}</span>
+                <b>{{ cdOf(c).value }}</b>
+                <span v-if="cdOf(c).live" class="cd-note">正在进行中</span>
+              </span>
             </div>
             <span class="ctest-rated" :class="ratedTag(c).cls" :title="ratedTag(c).cls === 'maybe' ? '按赛制惯例预估,CF 赛前不公布 rated 状态' : ''">
               {{ ratedTag(c).t }}
@@ -554,6 +608,12 @@ onUnmounted(() => clearInterval(tickTimer))
       <div class="foot-made">🛠️ 由北华大学程序设计工作室自研</div>
       数据实时抓取 + 浏览器缓存:CF 各列直连官方 API · 牛客 Rating / 总过题数经服务端代理(腾讯云 SCF)·
       名单维护:编辑 <code>public/data/members.json</code>
+      <div class="foot-feedback">
+        💡 如果有任何更改意见,请提交
+        <a href="https://github.com/Dddddduo/Bhu-Acm-Grade/issues" target="_blank" rel="noopener">
+          GitHub Issues ↗
+        </a>
+      </div>
       <div class="foot-repo">
         <a href="https://github.com/Dddddduo/Bhu-Acm-Grade" target="_blank" rel="noopener">
           GitHub:Dddddduo/Bhu-Acm-Grade
@@ -578,19 +638,67 @@ onUnmounted(() => clearInterval(tickTimer))
   display: grid; grid-template-columns: 1fr; justify-items: center; gap: 14px;
   position: relative;
 }
-/* 主标题:整行居中,加大加粗 + 金色下划线 */
+/* 主标题:整行居中,加大加粗 + 金色下划线;流光艺术字 —— 渐变金在字面上来回扫 */
 .hero h1 {
   font-size: 30px; font-weight: 800; letter-spacing: 1.5px;
   display: flex; align-items: center; justify-content: center; gap: 12px;
-  text-shadow: 0 2px 10px rgba(0,0,0,0.30);
   position: relative; padding-bottom: 10px;
+}
+.title-text {
+  color: #fff; /* 不支持渐变裁切时的保底 */
+  background: linear-gradient(100deg, #dbe7ff 0%, #ffffff 18%, #ffd97a 34%, #fff6d8 46%, #ffffff 58%, #dbe7ff 78%, #ffffff 100%);
+  background-size: 220% 100%;
+  animation: title-shine 5.5s ease-in-out infinite;
+}
+.title-accent {
+  color: #ffd97a; font-weight: 900; font-style: normal; letter-spacing: 2px;
+  background: linear-gradient(100deg, #f5b629 0%, #fff3c4 25%, #ffe89a 40%, #f5b629 55%, #fff3c4 75%, #f5b629 100%);
+  background-size: 200% 100%;
+  animation: accent-shine 2.8s linear infinite;
+}
+@supports (-webkit-background-clip: text) or (background-clip: text) {
+  .title-text, .title-accent {
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; /* 渐变即字色;text-shadow 会透出,改用 drop-shadow */
+  }
+  .title-text { filter: drop-shadow(0 2px 10px rgba(0, 0, 0, 0.35)); }
+  .title-accent { filter: drop-shadow(0 0 3px rgba(245, 182, 41, 0.5)); animation: accent-shine 2.8s linear infinite, accent-glow 2.8s ease-in-out infinite; }
+}
+@keyframes title-shine {
+  0% { background-position: 120% 0; }
+  55%, 100% { background-position: -80% 0; } /* 扫过去后停一拍,再回来,不晃眼 */
+}
+@keyframes accent-shine { to { background-position: -200% 0; } }
+@keyframes accent-glow {
+  0%, 100% { filter: drop-shadow(0 0 3px rgba(245, 182, 41, 0.45)); }
+  50% { filter: drop-shadow(0 0 10px rgba(255, 217, 122, 0.9)); }
 }
 .hero h1::after {
   content: ''; position: absolute; left: 50%; transform: translateX(-50%); bottom: 0;
   width: 72px; height: 3px; border-radius: 999px;
   background: linear-gradient(90deg, transparent, #ffd97a, #f5b629, transparent);
+  background-size: 200% 100%;
+  animation: underline-slide 2.8s ease-in-out infinite;
 }
+@keyframes underline-slide { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+/* 双⚡:左右各自摆动 + 摆到顶点"来电"一亮 */
 .logo { font-size: 30px; }
+.zap { display: inline-block; transform-origin: top center; animation: zap-swing 2.8s ease-in-out infinite; }
+.zap-r { animation-delay: 1.4s; }
+@keyframes zap-swing {
+  0%, 100% { transform: rotate(0deg); filter: drop-shadow(0 0 2px rgba(255, 217, 122, 0.3)); }
+  12% { transform: rotate(-12deg); filter: drop-shadow(0 0 8px rgba(255, 217, 122, 0.95)); }
+  24% { transform: rotate(8deg); }
+  36% { transform: rotate(-4deg); filter: drop-shadow(0 0 3px rgba(255, 217, 122, 0.4)); }
+  48%, 100% { transform: rotate(0deg); filter: drop-shadow(0 0 2px rgba(255, 217, 122, 0.3)); }
+}
+/* 减少动态:标题流光/下划线/双⚡全部静止,渐变停在最好看的一帧 */
+@media (prefers-reduced-motion: reduce) {
+  .title-text, .title-accent, .hero h1::after, .zap { animation: none; }
+  .title-text { background-position: 34% 0; }   /* 定格:金色高光正好压在字面上 */
+  .title-accent { background-position: 30% 0; filter: drop-shadow(0 0 3px rgba(245, 182, 41, 0.5)); }
+  .zap { transform: none; filter: drop-shadow(0 0 2px rgba(255, 217, 122, 0.3)); }
+}
 
 /* 励志标语轮播:hero 底部独占一整行,5s 换一条,淡入淡出;小圆点可手动切换 */
 .ticker {
@@ -629,6 +737,18 @@ onUnmounted(() => clearInterval(tickTimer))
   position: absolute; top: 0; right: 40px;
   font-size: 12px; opacity: 0.8; background: rgba(255,255,255,0.12); padding: 5px 12px; border-radius: 999px;
 }
+/* 抓取中:前面亮一个呼吸绿点,状态一眼可见 */
+.stamp.busy { opacity: 1; }
+.stamp.busy::before {
+  content: ''; display: inline-block; vertical-align: 1px;
+  width: 7px; height: 7px; border-radius: 50%; margin-right: 6px;
+  background: #7dffa8; box-shadow: 0 0 0 0 rgba(125, 255, 168, 0.7);
+  animation: stamp-pulse 1.2s ease-out infinite;
+}
+@keyframes stamp-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(125, 255, 168, 0.7); }
+  100% { box-shadow: 0 0 0 7px rgba(125, 255, 168, 0); }
+}
 
 main { margin-top: -14px; position: relative; z-index: 2; }
 
@@ -646,7 +766,9 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 .sum-card {
   background: var(--card); border-radius: 14px; padding: 16px 20px;
   box-shadow: var(--shadow); text-align: center;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
+.sum-card:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(28, 42, 90, 0.12); }
 .sum-num { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .sum-label { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 .sum-card.accent .sum-num { color: var(--green); }
@@ -679,16 +801,45 @@ main { margin-top: -14px; position: relative; z-index: 2; }
   box-shadow: 0 2px 10px rgba(28, 42, 90, 0.06);
   transition: transform 0.18s ease, box-shadow 0.18s ease;
   position: relative;
+  animation: pod-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) backwards; /* 进场:依次上浮落位 */
 }
-.pod:hover { transform: translateY(-3px); box-shadow: 0 8px 22px rgba(28, 42, 90, 0.14); }
-.pod-medal { font-size: 26px; line-height: 1; filter: drop-shadow(0 2px 3px rgba(160,106,0,0.25)); }
+/* 三张卡按槽位错开入场(先冠军、再左右),比齐刷刷出现更有仪式感 */
+.pod.slot1 { animation-delay: 0.05s; }
+.pod.slot2 { animation-delay: 0.16s; }
+.pod.slot3 { animation-delay: 0.27s; }
+@keyframes pod-in {
+  from { opacity: 0; transform: translateY(16px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.pod:hover { transform: translateY(-3px) scale(1.02); box-shadow: 0 8px 22px rgba(28, 42, 90, 0.14); }
+.pod-medal { font-size: 26px; line-height: 1; filter: drop-shadow(0 2px 3px rgba(160,106,0,0.25)); transform-origin: top center; animation: medal-swing 3.2s ease-in-out infinite; }
+@keyframes medal-swing {
+  0%, 100% { transform: rotate(0deg); }
+  12% { transform: rotate(-10deg); }
+  24% { transform: rotate(7deg); }
+  36% { transform: rotate(-4deg); }
+  48% { transform: rotate(0deg); }
+}
 .pod-name { font-size: 15px; font-weight: 700; margin-top: 4px; }
 .pod-class { font-size: 11.5px; color: var(--muted); }
 .pod-num { font-size: 30px; font-weight: 800; line-height: 1.15; font-variant-numeric: tabular-nums; color: var(--green); }
 .pod-num small { font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 2px; }
 .pod-bar { width: 78%; height: 5px; border-radius: 999px; background: #eef1f8; overflow: hidden; margin-top: 4px; }
-.pod-bar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #ffd97a, #f5b629); }
+.pod-bar i {
+  display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #ffd97a, #f5b629);
+  transform-origin: left center; animation: bar-grow 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.45s backwards; /* 卡片落位后,占比条从 0 生长 */
+}
+@keyframes bar-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 .pod-share { font-size: 11px; color: #a06a00; margin-top: 3px; font-variant-numeric: tabular-nums; }
+/* CF 总过题标注:比"占今日"再沉稳一档,和今日题数区分开 */
+.pod-total {
+  margin-top: 6px; padding-top: 6px; font-size: 11px; color: var(--muted);
+  border-top: 1px dashed #f0d89a; font-variant-numeric: tabular-nums;
+}
+.pod-total b { color: var(--accent); font-size: 12.5px; font-weight: 700; margin-left: 3px; }
+.pod-total b.unknown { color: #b8bdd0; font-weight: 500; font-size: 11px; }
+.pod.slot1 .pod-total { font-size: 12px; }
+.pod.slot1 .pod-total b { font-size: 14px; }
 
 /* 冠军居中:更大、金色描边、轻微呼吸光晕(按槽位算,并列名次也不会错位) */
 .pod.slot1 {
@@ -712,7 +863,10 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 
 @media (prefers-reduced-motion: reduce) {
   .pod.slot1 { animation: none; }
-  .pod { transition: none; }
+  .pod { transition: none; animation: none; }
+  .pod-medal { animation: none; }
+  .pod-bar i { animation: none; }
+  .stamp.busy::before { animation: none; }
 }
 
 /* 还没人刷题:虚位以待 */
@@ -749,6 +903,25 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 .ctest-name:hover { color: var(--accent); text-decoration: underline; }
 .ctest-ext { font-size: 11px; color: var(--muted); }
 .ctest-time { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* 实时倒计时:每秒跳动。tabular-nums 等宽数字,秒位翻动不抖行 */
+.ctest-cd {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 4px;
+  font-size: 12px; color: var(--muted);
+}
+.ctest-cd .cd-label {
+  font-weight: 600; color: var(--accent);
+  background: var(--accent-soft); border-radius: 999px; padding: 1px 8px;
+}
+.ctest-cd b { color: #1c2233; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.3px; }
+/* 24 小时内开场:整条转橙色警示,数字微微呼吸 */
+.ctest-cd.soon .cd-label { color: #b45309; background: #fff3e0; }
+.ctest-cd.soon b { color: #d97706; animation: cd-breathe 1.6s ease-in-out infinite; }
+/* 正在打:红色「距结束」,和进行中徽章同色系 */
+.ctest-cd.cd-live .cd-label { color: #fff; background: #d92d20; }
+.ctest-cd.cd-live b { color: #d92d20; }
+.cd-note { font-size: 11px; color: #d92d20; font-weight: 600; }
+@keyframes cd-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+@media (prefers-reduced-motion: reduce) { .ctest-cd.soon b { animation: none; } }
 .ctest-rated { font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
 .ctest-rated.yes { color: var(--green); background: var(--green-soft); }
 .ctest-rated.maybe { color: #8a5800; background: #fff6e0; }
@@ -822,6 +995,15 @@ main { margin-top: -14px; position: relative; z-index: 2; }
   box-shadow: inset 0 0 0 1px rgba(59, 108, 255, 0.18);
 }
 .foot code { background: #e4e9f4; padding: 1px 6px; border-radius: 4px; }
+/* 反馈入口:页脚里最醒目的一行,引导提 issue */
+.foot-feedback {
+  margin-top: 10px; font-size: 12.5px; color: var(--text);
+}
+.foot-feedback a {
+  color: var(--accent); font-weight: 700; text-decoration: none;
+  border-bottom: 1px dashed var(--accent);
+}
+.foot-feedback a:hover { text-decoration: none; border-bottom-style: solid; }
 .foot-repo { margin-top: 8px; display: flex; justify-content: center; align-items: center; gap: 14px; flex-wrap: wrap; }
 .foot-repo a { color: var(--accent); text-decoration: none; }
 .foot-repo a:hover { text-decoration: underline; }

@@ -40,5 +40,4 @@ const initial = computed(() => (props.member.name || '?').trim().slice(0, 1))
 .avatar-fallback {
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 13px; font-weight: 700; color: #8b93ab;
-}
-</style>
+}</style>
