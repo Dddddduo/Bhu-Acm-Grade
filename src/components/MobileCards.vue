@@ -3,6 +3,7 @@
 // 数据口径和 RankTable 完全一致(同一个 rows;奖牌用父组件按总分切好的 levels)
 // ★ showMedals=false(老登榜):卡头奖牌徽章整块隐藏——不评奖牌,排名不分先后
 import TierBadge from './TierBadge.vue'
+import MemberAvatar from './MemberAvatar.vue'
 
 const props = defineProps({
   rows: { type: Array, required: true },
@@ -36,6 +37,7 @@ function levelOf(row) {
           <template v-if="MEDAL[levelOf(row).level]">{{ MEDAL[levelOf(row).level] }}{{ levelOf(row).rank }}</template>
           <template v-else>未定级</template>
         </span>
+        <MemberAvatar :member="row.member" />
         <span class="name">
           <b>{{ row.member.name }}</b>
           <small>{{ row.member.clazz }}</small>

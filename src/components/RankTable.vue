@@ -5,6 +5,7 @@
 // 换成别的列排序时每个人的奖牌等级保持不变;没数据的人显示「未定级」(不再用 —)
 // ★ showMedals=false(老登榜):整列去掉评级/奖牌——不评奖牌,排名不分先后
 import TierBadge from './TierBadge.vue'
+import MemberAvatar from './MemberAvatar.vue'
 
 const props = defineProps({
   rows: { type: Array, required: true },
@@ -66,9 +67,12 @@ function todayClass(v) {
             </span>
           </td>
           <td class="col-name sticky-col" :class="{ 'no-rank': !showMedals }">
-            <span class="who-text">
-              <b>{{ row.member.name }}</b>
-              <small>{{ row.member.clazz }}</small>
+            <span class="who">
+              <MemberAvatar :member="row.member" />
+              <span class="who-text">
+                <b>{{ row.member.name }}</b>
+                <small>{{ row.member.clazz }}</small>
+              </span>
             </span>
           </td>
           <td
@@ -171,6 +175,7 @@ tbody tr:hover .sticky-col { background: var(--accent-soft); }
 .rank-cell.unranked { font-size: 12px; font-weight: 500; color: #a5abc0; }
 
 .col-name { max-width: 150px; }
+.who { display: inline-flex; align-items: center; gap: 9px; }
 .who-text { display: inline-flex; flex-direction: column; line-height: 1.25; }
 .who-text b { font-size: 14px; }
 .who-text small { color: var(--muted); font-size: 12px; font-weight: 400; }
