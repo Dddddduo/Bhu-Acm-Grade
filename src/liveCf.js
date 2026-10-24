@@ -13,19 +13,29 @@
 
 const API = 'https://codeforces.com/api'
 const GAP_MS = 3000
+const REQ_TIMEOUT_MS = 15000 // 单次请求超时:CF 响应正常 <1s,15s 不回就是链路死了
 const PAGE = 10000 // user.status 单页上限内取大,减少翻页次数(实测 count=10000 全量返回)
 const MAX_PAGES = 1 // 安全阀:单人最多翻 1 万条提交,再多只按已翻到的算
 
 let lastAt = 0
 // 全站唯一的 CF 限速闸门:user.status / contest.list / contest.ratingChanges 都排队走这里
 // (官方限制 1 次/2s 是按 IP 算的,多开一条队列就会撞限)
+// 必须带超时:裸 fetch 一旦在弱网/代理环境吊死(不拒不回),整轮 Promise 永远悬着,
+// liveBusy 卡成 true,之后每一轮都被静默跳过 -> 页面再也不刷新。abort 后走各层 try/catch,
+// 单人失败保留旧值,不拖全轮。
 export async function getJson(url) {
   const wait = lastAt + GAP_MS - Date.now()
   if (wait > 0) await new Promise((r) => setTimeout(r, wait))
   lastAt = Date.now()
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), REQ_TIMEOUT_MS)
+  try {
+    const res = await fetch(url, { signal: ctl.signal })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.json()
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 // 北京时间的"今天"日期串
@@ -69,9 +79,10 @@ export async function fetchCfLive(members, onEach) {
     const handles = [...new Set(withHandle.map((m) => m.cf_handle))]
     const d = await getJson(`${API}/user.info?handles=${handles.map(encodeURIComponent).join(';')}`)
     if (d.status === 'OK') {
-      const byHandle = Object.fromEntries(d.result.map((u) => [u.handle, u]))
+      // handle 大小写不敏感:members.json 可能存 "Bishengleandjay111",API 返回规范小写
+      const byHandle = Object.fromEntries(d.result.map((u) => [u.handle.toLowerCase(), u]))
       for (const m of withHandle) {
-        const u = byHandle[m.cf_handle]
+        const u = byHandle[m.cf_handle.toLowerCase()]
         if (!u) continue
         emit(String(m.id), {
           cf_rating: u.rating ?? null,
@@ -127,7 +138,8 @@ export async function fetchCfLive(members, onEach) {
 // 未开始的比赛按名称启发式标「预计计分」(CF API 赛前不给 rated 字段)。
 // 最多展示 RECENT_MAX 场,其余只计数提醒;抓失败返回 null(调用方保留旧值)。
 // ============================================================
-const RECENT_MAX = 5
+const RECENT_MAX = 3
+export const RECENT_CONTEST_MAX = RECENT_MAX
 const FINISHED_WINDOW = 7 * 86400 // 已结束比赛只展示近 7 天的
 export const CONTEST_CACHE_KEY = 'bhu-acm-contest-cache-v1'
 

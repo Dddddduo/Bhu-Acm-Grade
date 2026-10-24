@@ -14,12 +14,12 @@ import MobileCards from './components/MobileCards.vue'
 import CountUp from './components/CountUp.vue'
 import OnlineBar from './components/OnlineBar.vue'
 import { COLUMNS } from './columns.js'
-import { fetchCfLive, fetchCfContests, ratedGuess, CONTEST_CACHE_KEY } from './liveCf.js'
+import { fetchCfLive, fetchCfContests, ratedGuess, CONTEST_CACHE_KEY, RECENT_CONTEST_MAX } from './liveCf.js'
 import { fetchNcLive } from './liveNc.js'
 import { computeScore, assignLevels } from './score.js'
 import { isOnlineNow } from './online.js'
 
-const LIVE_EVERY_MS = 10 * 60 * 1000 // 每 10 分钟自动抓一轮(缓存在这之内直接复用,不重抓)
+const LIVE_EVERY_MS = 10 * 60 * 1000 // 每 10 分钟自动抓一轮(缓存在这之内直接复用,不重抓;在线窗口同宽,见 online.js)
 const CACHE_KEY = 'bhu-acm-live-cache-v1'
 
 const members = ref([])
@@ -90,7 +90,7 @@ onMounted(() => window.addEventListener('resize', onResize))
 onUnmounted(() => window.removeEventListener('resize', onResize))
 
 // ---------- 近期比赛(Div.1~4 / 1+2,不含 gym) ----------
-// contests: { id, name, phase, startTimeSeconds, durationSeconds, ratingConfirmed } 最多 5 条;
+// contests: { id, name, phase, startTimeSeconds, durationSeconds, ratingConfirmed } 最多 3 条;
 // restCount: 窗口内没展示出来的场数,只做数字提醒。
 // 「可计算 Rating」标注:已结束的以 contest.ratingChanges 实锤为准(ratingConfirmed),
 // 未结束的按名称启发式预估(ratedGuess),文案区分「计分 / 预计计分」。
@@ -103,8 +103,10 @@ function loadContestCache() {
   try {
     const c = JSON.parse(localStorage.getItem(CONTEST_CACHE_KEY))
     if (c && Array.isArray(c.list) && Number.isFinite(c.at) && c.at <= Date.now()) {
-      contests.value = c.list
-      restCount.value = c.rest || 0
+      // 旧缓存可能存着上限改小前的多条(如 RECENT_MAX 5→3),读入时按新上限截断
+      const shown = c.list.slice(0, RECENT_CONTEST_MAX)
+      contests.value = shown
+      restCount.value = (c.rest || 0) + (c.list.length - shown.length)
       contestsAt.value = c.at
     }
   } catch {
@@ -261,6 +263,17 @@ const onlineMembers = computed(() => {
     .map((m) => ({ member: m, stats: live[String(m.id)] || null }))
     .filter((r) => isOnlineNow(r.stats?.cf_last_online))
     .sort((a, b) => todayOf(b) - todayOf(a) || (a.member.name || '').localeCompare(b.member.name || '', 'zh'))
+})
+
+// 最近下线的人:离线但不久前上过线(同样全员合并,不分新生/老登),按上次在线时间倒序取 9 个
+// 没抓到 lastOnline 的人不进这个榜;读 nowSec -> 30 秒一跳自动重算在线判定
+const recentOfflineMembers = computed(() => {
+  const live = livePatch.value
+  return members.value
+    .map((m) => ({ member: m, stats: live[String(m.id)] || null }))
+    .filter((r) => typeof r.stats?.cf_last_online === 'number' && !isOnlineNow(r.stats.cf_last_online))
+    .sort((a, b) => b.stats.cf_last_online - a.stats.cf_last_online)
+    .slice(0, 9)
 })
 
 const filtered = computed(() => {
@@ -515,15 +528,15 @@ onUnmounted(() => clearInterval(tickTimer))
 
       <!-- 当前在线:紧跟今日之星下方,谁此刻在 Codeforces 一眼可见(判定口径见 online.js)
            全员合并展示:不分新生/老登,切分组不影响这里的人 -->
-      <OnlineBar :rows="onlineMembers" />
+      <OnlineBar :rows="onlineMembers" :recent="recentOfflineMembers" />
 
-      <!-- 近期比赛:CF 正式轮(Div.1~4 / 1+2),不含 gym;最多 5 场,其余只提醒数量 -->
+      <!-- 近期比赛:CF 正式轮(Div.1~4 / 1+2),不含 gym;最多 3 场,其余只提醒数量 -->
       <section v-if="contests.length" class="contests">
         <div class="ctests-head">
           <span class="ctests-title">📅 近期比赛</span>
           <span class="ctests-sub">
             Codeforces 正式轮(Div.1~4 / 1+2,不含 Gym)·
-            <b>{{ ratedContestCount }}</b> 场可计算 Codeforces Rating<template v-if="restCount"> · 另有 {{ restCount }} 场未列出</template>
+            <b>{{ ratedContestCount }}</b> 场可计算 Codeforces Rating<template v-if="restCount"> · 另有 {{ restCount }} 场未列出。Div.1 > 牛客挑战赛 > Div.2 > 牛客练习赛 > Div.3 > 牛客小白月赛 > 牛客周赛 ≈ Div.4</template>
           </span>
         </div>
         <ul class="ctests-list">
@@ -554,7 +567,7 @@ onUnmounted(() => clearInterval(tickTimer))
           </li>
         </ul>
         <p v-if="restCount" class="ctest-more">
-          另有 {{ restCount }} 场未展示(只保留最近 5 场,打完的超过 7 天自动移出列表)——
+          另有 {{ restCount }} 场未展示(只保留最近 3 场,打完的超过 7 天自动移出列表)——
           <a href="https://codeforces.com/contests" target="_blank" rel="noopener">全部比赛 ↗</a>
         </p>
       </section>
@@ -574,7 +587,7 @@ onUnmounted(() => clearInterval(tickTimer))
             <li><strong>CF Rating / CF 最高分</strong>:Codeforces 官方 API <code>user.info</code>,按官方段位上色。</li>
             <li><strong>CF 总做题 / CF 近30天</strong>:官方 API <code>user.status</code> 全部提交历史里,verdict=OK 的<strong>不同题目</strong>数(近30天为滚动30天窗口;同一题反复 AC 只算一道)。</li>
             <li><strong>CF 今日</strong>:北京时间今日 0 点起 AC 的不同题目数;今天还没抓到就显示<strong>未定级</strong>,绝不拿昨天的数冒充。</li>
-            <li><strong>在线状态</strong>:Codeforces 官方 API <code>user.info</code> 的 <code>lastOnlineTimeSeconds</code>(上次访问 CF 的时间)。<strong>30 分钟内</strong>上过 CF 算 <strong>Online now</strong>,否则显示离线时长;页面开着每 30 秒自动重算。今日之星下方的「当前在线」横条展示<strong>全员</strong>(新生+老登合并,不随分组切换变化)。</li>
+            <li><strong>在线状态</strong>:Codeforces 官方 API <code>user.info</code> 的 <code>lastOnlineTimeSeconds</code>(上次访问 CF 的时间)。<strong>10 分钟内</strong>上过 CF 算 <strong>Online now</strong>,否则显示离线时长;页面开着每 30 秒自动重算。今日之星下方的「当前codeforces在线」横条展示<strong>全员</strong>(新生+老登合并,不随分组切换变化);没人在线也照常显示人数(0 + 「当前没有人在线」),横条下面另列一行「最近上线」:离线但不久前上过线的 9 个人,按上次在线时间从近到远排。</li>
             <li><strong>牛客 Rating</strong>:牛客 <code>rating-history</code> 接口最新一条记录的 Rating。该接口对带跨站 Origin 的请求会被 WAF 拦截,浏览器无法直连,经服务端代理(腾讯云 SCF Web 函数)获取。</li>
             <li><strong>牛客总过题</strong>:牛客个人主页官方统计「题已通过」数(按题目去重的 AC 题数,同一题反复 AC 只算一次,与 CF 总做题同口径),经代理读取,约每 10 分钟更新。</li>
             <li>数据缓存在浏览器里:打开页面先显示缓存,超过 10 分钟才自动重抓;页面开着每 10 分钟更新一轮。某人抓失败只跳过他(保留旧值),不影响别人。</li>

@@ -71,7 +71,11 @@ function todayClass(v) {
             <span class="who">
               <MemberAvatar :member="row.member" :online="isOnlineNow(row.stats?.cf_last_online)" />
               <span class="who-text">
-                <b>{{ row.member.name }}</b>
+                <span class="who-line">
+                  <b>{{ row.member.name }}</b>
+                  <!-- 名字旁灰色小字:积分总分(score.js 口径,和手机端卡头「总分」一致;>0 才显示) -->
+                  <small v-if="row.stats?.score > 0" class="who-score">{{ row.stats.score }} 分</small>
+                </span>
                 <small>{{ row.member.clazz }}</small>
               </span>
             </span>
@@ -98,7 +102,7 @@ function todayClass(v) {
               :title="row.stats?.[col.key] == null
                 ? '还没抓到 Codeforces 数据'
                 : isOnlineNow(row.stats[col.key])
-                  ? 'Online now!距上次访问 CF < 30 分钟'
+                  ? 'Online now!距上次访问 CF < 10 分钟'
                   : `上次在线:${lastSeenText(row.stats[col.key])}`"
             >
               <template v-if="row.stats?.[col.key] != null && isOnlineNow(row.stats[col.key])"><i class="ob-pulse"></i>Online now</template>
@@ -217,6 +221,9 @@ tbody { animation: tbody-in 0.32s cubic-bezier(0.22, 1, 0.36, 1); }
 .who-text { display: inline-flex; flex-direction: column; line-height: 1.25; }
 .who-text b { font-size: 14px; }
 .who-text small { color: var(--muted); font-size: 12px; font-weight: 400; }
+/* 名字行:姓名 + 灰色小字总分贴着排,分数弱显示不抢姓名焦点 */
+.who-line { display: inline-flex; align-items: baseline; gap: 5px; }
+.who-score { font-size: 11px; color: #a5abc0; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 .num { font-variant-numeric: tabular-nums; font-weight: 600; }
 .empty { color: #b8bdd0; font-size: 12px; }

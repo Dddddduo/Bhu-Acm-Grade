@@ -1,14 +1,15 @@
 // ============================================================
 // 在线状态:唯一数据源是 CF 官方 user.info 的 lastOnlineTimeSeconds(unix 秒)
 // 官方 API 没有"实时在线"布尔字段,所以这里自己定口径:
-//   距上次访问 Codeforces < 30 分钟  ⇒  在线(online now)
-// 为什么是 30 分钟:页面每 10 分钟才抓一轮(liveCf.js GAP_MS 限速 1 次/2s),
-// 窗口再短会把"刚在线但还没被抓到"的人误判成离线;30 分钟兼顾醒目和可用。
+//   距上次访问 Codeforces < 10 分钟  ⇒  在线(online now)
+// 口径权衡:时间戳只在每轮抓取时更新,窗口 = 抓取节奏(App.vue 的 LIVE_EVERY_MS)。
+// 窗口小于节奏会把"真在线但还没轮到抓取"的人误判成离线;再往下调窗口必须同时加密抓取,
+// 且不能小于单轮抓取耗时(~2 分钟),否则一轮没抓完早先抓的人就被判离线。
 // nowSec 每 30 秒跳一次:人离开后标签会在窗口到期时自己变灰,不用等下一轮抓取。
 // ============================================================
 import { ref } from 'vue'
 
-export const ONLINE_WINDOW_SEC = 30 * 60
+export const ONLINE_WINDOW_SEC = 10 * 60
 
 export const nowSec = ref(Math.floor(Date.now() / 1000))
 if (typeof window !== 'undefined') {
