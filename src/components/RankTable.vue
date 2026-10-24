@@ -6,7 +6,7 @@
 // ★ showMedals=false(老登榜):整列去掉评级/奖牌——不评奖牌,排名不分先后
 import TierBadge from './TierBadge.vue'
 import MemberAvatar from './MemberAvatar.vue'
-import { isOnlineNow, lastSeenText } from '../online.js'
+import { isOnlineNow, hasOnlineData, lastSeenText } from '../online.js'
 
 const props = defineProps({
   rows: { type: Array, required: true },
@@ -69,7 +69,7 @@ function todayClass(v) {
           </td>
           <td class="col-name sticky-col" :class="{ 'no-rank': !showMedals }">
             <span class="who">
-              <MemberAvatar :member="row.member" :online="isOnlineNow(row.stats?.cf_last_online)" />
+              <MemberAvatar :member="row.member" :online="isOnlineNow(row.stats)" />
               <span class="who-text">
                 <span class="who-line">
                   <b>{{ row.member.name }}</b>
@@ -94,19 +94,19 @@ function todayClass(v) {
               :platform="col.cfTier ? 'cf' : 'nc'"
             />
             <!-- 在线状态列:Online now 醒目绿(呼吸点+光晕),离线灰底显示上次活跃时间;
-                 值为 cf_last_online(unix 秒),口径见 ../online.js,30 秒自动重算 -->
+                 双信号(cf_last_online 访问 / cf_last_submit 交题)判定,口径见 ../online.js,30 秒自动重算 -->
             <span
               v-else-if="col.online"
               class="obadge"
-              :class="row.stats?.[col.key] == null ? 'unk' : isOnlineNow(row.stats[col.key]) ? 'on' : 'off'"
-              :title="row.stats?.[col.key] == null
+              :class="!hasOnlineData(row.stats) ? 'unk' : isOnlineNow(row.stats) ? 'on' : 'off'"
+              :title="!hasOnlineData(row.stats)
                 ? '还没抓到 Codeforces 数据'
-                : isOnlineNow(row.stats[col.key])
-                  ? 'Online now!距上次访问 CF < 10 分钟'
-                  : `上次在线:${lastSeenText(row.stats[col.key])}`"
+                : isOnlineNow(row.stats)
+                  ? 'Online now!30 分钟内访问过 CF,或 60 分钟内交过题'
+                  : `上次活跃:${lastSeenText(row.stats)}`"
             >
-              <template v-if="row.stats?.[col.key] != null && isOnlineNow(row.stats[col.key])"><i class="ob-pulse"></i>Online now</template>
-              <template v-else-if="row.stats?.[col.key] != null">离线 · {{ lastSeenText(row.stats[col.key]) || '?' }}</template>
+              <template v-if="hasOnlineData(row.stats) && isOnlineNow(row.stats)"><i class="ob-pulse"></i>Online now</template>
+              <template v-else-if="hasOnlineData(row.stats)">离线 · {{ lastSeenText(row.stats) || '?' }}</template>
               <template v-else>未定级</template>
             </span>
             <!-- 今日列:高亮 pill -->

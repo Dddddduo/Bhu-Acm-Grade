@@ -1,6 +1,6 @@
 <script setup>
 // 在线成员横条:展示在今日之星下方,谁此刻在线一眼可见
-// 全员合并(新生+老登),与分组切换无关;在线判定用 online.js 的 10 分钟窗口,每 30 秒自动重算
+// 全员合并(新生+老登),与分组切换无关;在线判定用 online.js 双信号(访问 CF 30 分钟内 / 交题 60 分钟内),每 30 秒自动重算
 // 没人在线也照常展示:人数显示 0 + 「当前没有人在线」,不整块隐藏
 // 第二排「最近上线」:离线但不久前上过线的人(最多 9 个,按上次在线时间倒序),灰胶囊弱显示
 // 在线胶囊:头像(带呼吸绿点)+ 姓名,点胶囊直达 TA 的 CF 主页
@@ -51,11 +51,11 @@ defineProps({
           :href="r.member.cf_handle ? `https://codeforces.com/profile/${r.member.cf_handle}` : null"
           target="_blank"
           rel="noopener"
-          :title="`${r.member.name} 上次在线:${lastSeenText(r.stats.cf_last_online) || '?'}`"
+          :title="`${r.member.name} 上次活跃:${lastSeenText(r.stats) || '?'}`"
         >
           <MemberAvatar :member="r.member" :online="false" />
           <span class="ob-name">{{ r.member.name }}</span>
-          <small class="ob-ago">{{ lastSeenText(r.stats.cf_last_online) }}</small>
+          <small class="ob-ago">{{ lastSeenText(r.stats) }}</small>
         </a>
       </div>
     </div>

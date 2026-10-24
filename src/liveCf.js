@@ -89,7 +89,7 @@ export async function fetchCfLive(members, onEach) {
           cf_max_rating: u.maxRating ?? null,
           cf_rank: u.rank ?? '',
           cf_max_rank: u.maxRank ?? '',
-          // 上次访问 CF 的时间(unix 秒)-> 在线状态,判定口径见 online.js
+          // 上次访问 CF 的时间(unix 秒)-> 在线判定第一信号,口径见 online.js(官方字段更新滞后,所以还要 user.status 的提交信号)
           cf_last_online: u.lastOnlineTimeSeconds ?? null,
         })
       }
@@ -123,6 +123,8 @@ export async function fetchCfLive(members, onEach) {
         cf_today: today.size,
         cf_30d: last30.size,
         cf_date: todayStr,
+        // 最新一次提交时间(unix 秒,与提交同请求顺带取,不多花一次请求)-> 在线判定的第二信号,口径见 online.js
+        cf_last_submit: subs.length ? subs.reduce((a, s) => Math.max(a, s.creationTimeSeconds), subs[0].creationTimeSeconds) : null,
       })
     } catch (e) {
       console.warn(`[live cf] ${m.name} user.status 失败(保留旧值):`, e)

@@ -4,7 +4,7 @@
 // ★ showMedals=false(老登榜):卡头奖牌徽章整块隐藏——不评奖牌,排名不分先后
 import TierBadge from './TierBadge.vue'
 import MemberAvatar from './MemberAvatar.vue'
-import { isOnlineNow, lastSeenText } from '../online.js'
+import { isOnlineNow, hasOnlineData, lastSeenText } from '../online.js'
 
 const props = defineProps({
   rows: { type: Array, required: true },
@@ -39,7 +39,7 @@ function levelOf(row) {
           <template v-if="MEDAL[levelOf(row).level]">{{ MEDAL[levelOf(row).level] }}{{ levelOf(row).rank }}</template>
           <template v-else>未定级</template>
         </span>
-        <MemberAvatar :member="row.member" :online="isOnlineNow(row.stats?.cf_last_online)" />
+        <MemberAvatar :member="row.member" :online="isOnlineNow(row.stats)" />
         <span class="name">
           <b>{{ row.member.name }}</b>
           <small>{{ row.member.clazz }}</small>
@@ -57,14 +57,14 @@ function levelOf(row) {
               :rank="m.cfTier ? row.stats?.[m.rankKey] || '' : ''"
               :platform="m.cfTier ? 'cf' : 'nc'"
             />
-            <!-- 在线状态:值为 cf_last_online(unix 秒),口径见 ../online.js,30 秒自动重算 -->
+            <!-- 在线状态:双信号(cf_last_online 访问 / cf_last_submit 交题)判定,口径见 ../online.js,30 秒自动重算 -->
             <span
               v-else-if="m.online"
               class="obadge"
-              :class="row.stats?.[m.key] == null ? 'unk' : isOnlineNow(row.stats[m.key]) ? 'on' : 'off'"
+              :class="!hasOnlineData(row.stats) ? 'unk' : isOnlineNow(row.stats) ? 'on' : 'off'"
             >
-              <template v-if="row.stats?.[m.key] != null && isOnlineNow(row.stats[m.key])"><i class="ob-pulse"></i>Online now</template>
-              <template v-else-if="row.stats?.[m.key] != null">离线 · {{ lastSeenText(row.stats[m.key]) || '?' }}</template>
+              <template v-if="hasOnlineData(row.stats) && isOnlineNow(row.stats)"><i class="ob-pulse"></i>Online now</template>
+              <template v-else-if="hasOnlineData(row.stats)">离线 · {{ lastSeenText(row.stats) || '?' }}</template>
               <template v-else>未定级</template>
             </span>
             <template v-else-if="m.hot">

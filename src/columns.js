@@ -8,7 +8,7 @@
 // ncTier     : true 表示按牛客官方 Rating 分段上色(见 TierBadge)
 // rankKey    : 上色时附带展示的 CF 段位名字段
 // hot        : 今日这类"活跃度"列,前端用高亮 pill 样式
-// online     : 在线状态列,值为 cf_last_online(unix 秒),渲染成 Online/离线徽章
+// online     : 在线状态列,用 cf_last_online(访问)+ cf_last_submit(交题)双信号渲染徽章,口径见 online.js
 // hidden     : true 表示暂时不展示(数据照常采集,以后放开)
 //
 // 数据全部浏览器实时抓取:CF 列直连官方 API;牛客 Rating / 总过题 经 Cloudflare Worker

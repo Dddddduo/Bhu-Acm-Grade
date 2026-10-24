@@ -17,9 +17,9 @@ import { COLUMNS } from './columns.js'
 import { fetchCfLive, fetchCfContests, ratedGuess, CONTEST_CACHE_KEY, RECENT_CONTEST_MAX } from './liveCf.js'
 import { fetchNcLive } from './liveNc.js'
 import { computeScore, assignLevels } from './score.js'
-import { isOnlineNow } from './online.js'
+import { isOnlineNow, hasOnlineData, lastActiveSec } from './online.js'
 
-const LIVE_EVERY_MS = 10 * 60 * 1000 // 每 10 分钟自动抓一轮(缓存在这之内直接复用,不重抓;在线窗口同宽,见 online.js)
+const LIVE_EVERY_MS = 10 * 60 * 1000 // 每 10 分钟自动抓一轮(缓存在这之内直接复用,不重抓;在线窗口 30 分钟,见 online.js)
 const CACHE_KEY = 'bhu-acm-live-cache-v1'
 
 const members = ref([])
@@ -253,7 +253,7 @@ function sharePct(n) {
   return todaySum.value ? Math.max(1, Math.round((n / todaySum.value) * 100)) : 0
 }
 
-// 当前在线的人:**不分新生/老登,全员合并展示**(按 cf_last_online 判定,口径见 online.js)。
+// 当前在线的人:**不分新生/老登,全员合并展示**(cf_last_online + cf_last_submit 双信号判定,口径见 online.js)。
 // 直接读 members + livePatch 原始补丁(不走 joined——joined 只含当前分组)。
 // 读 nowSec 的 computed -> online.js 里 30 秒一跳的定时器会驱动它自动重算,人下线不用等下一轮抓取。
 // 稳定排序:今日做题多的排前面,并列按姓名。
@@ -261,18 +261,18 @@ const onlineMembers = computed(() => {
   const live = livePatch.value
   return members.value
     .map((m) => ({ member: m, stats: live[String(m.id)] || null }))
-    .filter((r) => isOnlineNow(r.stats?.cf_last_online))
+    .filter((r) => isOnlineNow(r.stats))
     .sort((a, b) => todayOf(b) - todayOf(a) || (a.member.name || '').localeCompare(b.member.name || '', 'zh'))
 })
 
-// 最近下线的人:离线但不久前上过线(同样全员合并,不分新生/老登),按上次在线时间倒序取 9 个
-// 没抓到 lastOnline 的人不进这个榜;读 nowSec -> 30 秒一跳自动重算在线判定
+// 最近下线的人:离线但不久前上过线(同样全员合并,不分新生/老登),按上次活跃时间倒序取 9 个
+// 两个信号都没抓到的人不进这个榜;读 nowSec -> 30 秒一跳自动重算在线判定
 const recentOfflineMembers = computed(() => {
   const live = livePatch.value
   return members.value
     .map((m) => ({ member: m, stats: live[String(m.id)] || null }))
-    .filter((r) => typeof r.stats?.cf_last_online === 'number' && !isOnlineNow(r.stats.cf_last_online))
-    .sort((a, b) => b.stats.cf_last_online - a.stats.cf_last_online)
+    .filter((r) => hasOnlineData(r.stats) && !isOnlineNow(r.stats))
+    .sort((a, b) => (lastActiveSec(b.stats) || 0) - (lastActiveSec(a.stats) || 0))
     .slice(0, 9)
 })
 
@@ -375,7 +375,7 @@ function logLive(cf, nc) {
     const c = cf[id] || {}
     const n = nc[id] || {}
     const cfPart = Object.keys(c).length
-      ? `CF: rating=${c.cf_rating ?? '—'} 最高=${c.cf_max_rating ?? '—'} 总题=${c.cf_total ?? '—'} 今日=${c.cf_today ?? '—'} 近30天=${c.cf_30d ?? '—'} 上次在线=${c.cf_last_online ? new Date(c.cf_last_online * 1000).toLocaleString('zh-CN', { hour12: false }) : '—'}`
+      ? `CF: rating=${c.cf_rating ?? '—'} 最高=${c.cf_max_rating ?? '—'} 总题=${c.cf_total ?? '—'} 今日=${c.cf_today ?? '—'} 近30天=${c.cf_30d ?? '—'} 上次在线=${c.cf_last_online ? new Date(c.cf_last_online * 1000).toLocaleString('zh-CN', { hour12: false }) : '—'} 最新提交=${c.cf_last_submit ? new Date(c.cf_last_submit * 1000).toLocaleString('zh-CN', { hour12: false }) : '—'}`
       : 'CF: 本轮未抓到(保留旧值)'
     const ncPart = Object.keys(n).length
       ? `牛客: Rating=${n.nc_rating ?? '—'} 总过题=${n.nc_total ?? '—'}`
@@ -587,7 +587,7 @@ onUnmounted(() => clearInterval(tickTimer))
             <li><strong>CF Rating / CF 最高分</strong>:Codeforces 官方 API <code>user.info</code>,按官方段位上色。</li>
             <li><strong>CF 总做题 / CF 近30天</strong>:官方 API <code>user.status</code> 全部提交历史里,verdict=OK 的<strong>不同题目</strong>数(近30天为滚动30天窗口;同一题反复 AC 只算一道)。</li>
             <li><strong>CF 今日</strong>:北京时间今日 0 点起 AC 的不同题目数;今天还没抓到就显示<strong>未定级</strong>,绝不拿昨天的数冒充。</li>
-            <li><strong>在线状态</strong>:Codeforces 官方 API <code>user.info</code> 的 <code>lastOnlineTimeSeconds</code>(上次访问 CF 的时间)。<strong>10 分钟内</strong>上过 CF 算 <strong>Online now</strong>,否则显示离线时长;页面开着每 30 秒自动重算。今日之星下方的「当前codeforces在线」横条展示<strong>全员</strong>(新生+老登合并,不随分组切换变化);没人在线也照常显示人数(0 + 「当前没有人在线」),横条下面另列一行「最近上线」:离线但不久前上过线的 9 个人,按上次在线时间从近到远排。</li>
+            <li><strong>在线状态</strong>:两个信号任一命中即在线——① Codeforces 官方 API <code>user.info</code> 的 <code>lastOnlineTimeSeconds</code>(上次访问 CF 的时间)<strong>30 分钟内</strong>;② <code>user.status</code> 最新一次提交在 <strong>60 分钟内</strong>(官方"上次访问"字段更新滞后,有人正在交题它却不刷新,故补交题信号)。否则显示离线时长;页面开着每 30 秒自动重算。今日之星下方的「当前codeforces在线」横条展示<strong>全员</strong>(新生+老登合并,不随分组切换变化);没人在线也照常显示人数(0 + 「当前没有人在线」),横条下面另列一行「最近上线」:离线但不久前上过线的 9 个人,按上次活跃时间从近到远排。</li>
             <li><strong>牛客 Rating</strong>:牛客 <code>rating-history</code> 接口最新一条记录的 Rating。该接口对带跨站 Origin 的请求会被 WAF 拦截,浏览器无法直连,经服务端代理(腾讯云 SCF Web 函数)获取。</li>
             <li><strong>牛客总过题</strong>:牛客个人主页官方统计「题已通过」数(按题目去重的 AC 题数,同一题反复 AC 只算一次,与 CF 总做题同口径),经代理读取,约每 10 分钟更新。</li>
             <li>数据缓存在浏览器里:打开页面先显示缓存,超过 10 分钟才自动重抓;页面开着每 10 分钟更新一轮。某人抓失败只跳过他(保留旧值),不影响别人。</li>
