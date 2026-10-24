@@ -1,0 +1,81 @@
+<script setup>
+// 在线成员横条:展示在今日之星下方,谁此刻在线一眼可见
+// 全员合并(新生+老登),与分组切换无关;在线判定用 online.js 的 30 分钟窗口,每 30 秒自动重算
+// 每人一枚胶囊:头像(带呼吸绿点)+ 姓名,点胶囊直达 TA 的 CF 主页
+import MemberAvatar from './MemberAvatar.vue'
+
+defineProps({
+  rows: { type: Array, required: true }, // [{ member, stats }] —— 已筛出在线的人
+})
+</script>
+
+<template>
+  <section v-if="rows.length" class="online-bar">
+    <span class="ob-head">
+      <span class="ob-dot"></span>
+      当前codeforces在线 <b>{{ rows.length }}</b> 人
+    </span>
+    <div class="ob-list">
+      <a
+        v-for="r in rows"
+        :key="r.member.id"
+        class="ob-chip"
+        :href="r.member.cf_handle ? `https://codeforces.com/profile/${r.member.cf_handle}` : null"
+        target="_blank"
+        rel="noopener"
+        :title="`${r.member.name} 正在 Codeforces`"
+      >
+        <MemberAvatar :member="r.member" online />
+        <span class="ob-name">{{ r.member.name }}</span>
+      </a>
+    </div>
+  </section>
+</template>
+
+<style scoped>
+.online-bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 10px 16px; margin-bottom: 14px; box-shadow: var(--shadow);
+}
+.ob-head {
+  display: inline-flex; align-items: center; gap: 7px; flex: none;
+  font-size: 13px; font-weight: 700; color: var(--muted);
+}
+.ob-head b { color: var(--green); font-size: 15px; font-variant-numeric: tabular-nums; }
+/* 标题旁的呼吸绿点,和头像角标同一套视觉语言 */
+.ob-dot {
+  position: relative; width: 9px; height: 9px; flex: none;
+  border-radius: 50%; background: #22c55e;
+  box-shadow: 0 0 6px 1px rgba(34, 197, 94, 0.8);
+}
+.ob-dot::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  background: rgba(34, 197, 94, 0.5);
+  animation: ob-ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes ob-ping {
+  0% { transform: scale(1); opacity: 0.8; }
+  70%, 100% { transform: scale(2.6); opacity: 0; }
+}
+.ob-list { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.ob-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 4px 12px 4px 5px; border-radius: 999px;
+  border: 1px solid rgba(18, 161, 80, 0.35); background: var(--green-soft);
+  color: var(--text); text-decoration: none !important;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  animation: chip-in 0.4s ease backwards; /* 上线的人逐个冒出来 */
+}
+.ob-chip:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(18, 161, 80, 0.25); }
+:deep(.avatar) { width: 22px; height: 22px; font-size: 11px; }
+.ob-name { font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+@keyframes chip-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.92); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ob-dot::after { animation: none; }
+  .ob-chip { animation: none; transition: none; }
+}
+</style>

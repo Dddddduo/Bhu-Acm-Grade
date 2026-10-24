@@ -4,6 +4,7 @@
 // ★ showMedals=false(老登榜):卡头奖牌徽章整块隐藏——不评奖牌,排名不分先后
 import TierBadge from './TierBadge.vue'
 import MemberAvatar from './MemberAvatar.vue'
+import { isOnlineNow, lastSeenText } from '../online.js'
 
 const props = defineProps({
   rows: { type: Array, required: true },
@@ -13,6 +14,7 @@ const props = defineProps({
 
 // 卡片上展示的字段:和 columns.js 里的列保持一致(加列记得两边都改)
 const METRICS = [
+  { key: 'cf_last_online', label: '在线状态', online: true },
   { key: 'cf_rating', label: 'CF Rating', cfTier: true, rankKey: 'cf_rank' },
   { key: 'cf_max_rating', label: 'CF 最高分', cfTier: true, rankKey: 'cf_max_rank' },
   { key: 'cf_total', label: 'CF 总做题' },
@@ -37,7 +39,7 @@ function levelOf(row) {
           <template v-if="MEDAL[levelOf(row).level]">{{ MEDAL[levelOf(row).level] }}{{ levelOf(row).rank }}</template>
           <template v-else>未定级</template>
         </span>
-        <MemberAvatar :member="row.member" />
+        <MemberAvatar :member="row.member" :online="isOnlineNow(row.stats?.cf_last_online)" />
         <span class="name">
           <b>{{ row.member.name }}</b>
           <small>{{ row.member.clazz }}</small>
@@ -55,6 +57,16 @@ function levelOf(row) {
               :rank="m.cfTier ? row.stats?.[m.rankKey] || '' : ''"
               :platform="m.cfTier ? 'cf' : 'nc'"
             />
+            <!-- 在线状态:值为 cf_last_online(unix 秒),口径见 ../online.js,30 秒自动重算 -->
+            <span
+              v-else-if="m.online"
+              class="obadge"
+              :class="row.stats?.[m.key] == null ? 'unk' : isOnlineNow(row.stats[m.key]) ? 'on' : 'off'"
+            >
+              <template v-if="row.stats?.[m.key] != null && isOnlineNow(row.stats[m.key])"><i class="ob-pulse"></i>Online now</template>
+              <template v-else-if="row.stats?.[m.key] != null">离线 · {{ lastSeenText(row.stats[m.key]) || '?' }}</template>
+              <template v-else>未定级</template>
+            </span>
             <template v-else-if="m.hot">
               <span v-if="row.stats?.[m.key] == null" class="empty">未定级</span>
               <b v-else :class="{ green: row.stats[m.key] > 0 }">{{ row.stats[m.key] }}</b>
@@ -106,6 +118,31 @@ function levelOf(row) {
 .cell-value b { font-size: 14.5px; }
 .cell-value .green { color: var(--green); }
 .empty { color: #b8bdd0; font-size: 12px; }
+
+/* 在线徽章:和 RankTable 同一套视觉——Online now 饱和绿呼吸点,离线灰底 */
+.obadge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 9px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+}
+.obadge.on {
+  color: #fff; background: linear-gradient(135deg, #16a34a, #22c55e);
+  box-shadow: 0 2px 8px rgba(34, 197, 94, 0.4);
+}
+.obadge.off { color: var(--muted); background: #e8ecf5; }
+.obadge.unk { color: #b8bdd0; font-weight: 400; }
+.ob-pulse {
+  width: 6px; height: 6px; border-radius: 50%; flex: none;
+  background: #fff; box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7);
+  animation: ob-pulse 1.4s ease-out infinite;
+}
+@keyframes ob-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7); }
+  100% { box-shadow: 0 0 0 5px rgba(255, 255, 255, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ob-pulse { animation: none; }
+}
 
 .ids { margin-top: 10px; display: flex; gap: 14px; flex-wrap: wrap; }
 .ids a { font-size: 12px; font-family: ui-monospace, Menlo, monospace; }

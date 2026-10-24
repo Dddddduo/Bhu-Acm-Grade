@@ -6,6 +6,7 @@
 // ★ showMedals=false(老登榜):整列去掉评级/奖牌——不评奖牌,排名不分先后
 import TierBadge from './TierBadge.vue'
 import MemberAvatar from './MemberAvatar.vue'
+import { isOnlineNow, lastSeenText } from '../online.js'
 
 const props = defineProps({
   rows: { type: Array, required: true },
@@ -68,7 +69,7 @@ function todayClass(v) {
           </td>
           <td class="col-name sticky-col" :class="{ 'no-rank': !showMedals }">
             <span class="who">
-              <MemberAvatar :member="row.member" />
+              <MemberAvatar :member="row.member" :online="isOnlineNow(row.stats?.cf_last_online)" />
               <span class="who-text">
                 <b>{{ row.member.name }}</b>
                 <small>{{ row.member.clazz }}</small>
@@ -88,6 +89,22 @@ function todayClass(v) {
               :rank="col.cfTier ? row.stats?.[col.rankKey] || '' : ''"
               :platform="col.cfTier ? 'cf' : 'nc'"
             />
+            <!-- 在线状态列:Online now 醒目绿(呼吸点+光晕),离线灰底显示上次活跃时间;
+                 值为 cf_last_online(unix 秒),口径见 ../online.js,30 秒自动重算 -->
+            <span
+              v-else-if="col.online"
+              class="obadge"
+              :class="row.stats?.[col.key] == null ? 'unk' : isOnlineNow(row.stats[col.key]) ? 'on' : 'off'"
+              :title="row.stats?.[col.key] == null
+                ? '还没抓到 Codeforces 数据'
+                : isOnlineNow(row.stats[col.key])
+                  ? 'Online now!距上次访问 CF < 30 分钟'
+                  : `上次在线:${lastSeenText(row.stats[col.key])}`"
+            >
+              <template v-if="row.stats?.[col.key] != null && isOnlineNow(row.stats[col.key])"><i class="ob-pulse"></i>Online now</template>
+              <template v-else-if="row.stats?.[col.key] != null">离线 · {{ lastSeenText(row.stats[col.key]) || '?' }}</template>
+              <template v-else>未定级</template>
+            </span>
             <!-- 今日列:高亮 pill -->
             <span
               v-else-if="col.hot"
@@ -213,6 +230,38 @@ tbody { animation: tbody-in 0.32s cubic-bezier(0.22, 1, 0.36, 1); }
 .pill.idle { background: #f2f3f7; color: #a5abc0; }
 .pill.empty { background: transparent; font-weight: 400; }
 
+/* 在线状态徽章:Online now 用饱和绿 + 白字 + 呼吸点 + 外发光,整列里一眼最跳;
+   离线退回灰底弱显示,不抢注意力 */
+.obadge {
+  position: relative; display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.obadge.on {
+  color: #fff; background: linear-gradient(135deg, #16a34a, #22c55e);
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.35), 0 2px 10px rgba(34, 197, 94, 0.45);
+  animation: ob-breathe 2s ease-in-out infinite;
+}
+.obadge.off { color: var(--muted); background: #f2f3f7; }
+.obadge.unk { color: #b8bdd0; font-weight: 400; }
+.ob-pulse {
+  width: 6px; height: 6px; border-radius: 50%; flex: none;
+  background: #fff; box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7);
+  animation: ob-pulse 1.4s ease-out infinite;
+}
+@keyframes ob-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7); }
+  100% { box-shadow: 0 0 0 5px rgba(255, 255, 255, 0); }
+}
+@keyframes ob-breathe {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.35), 0 2px 10px rgba(34, 197, 94, 0.45); }
+  50% { box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.35), 0 2px 16px rgba(34, 197, 94, 0.75); }
+}
+/* 悬停行放大时,在线徽章跟着一起放大(和 num/pill 同一节奏) */
+tbody tr:hover .obadge { transform: scale(1.15); }
+
 .col-links a { margin-right: 10px; font-size: 13px; }
 .no-data { text-align: center; color: var(--muted); padding: 40px 0; }
 
@@ -220,6 +269,7 @@ tbody { animation: tbody-in 0.32s cubic-bezier(0.22, 1, 0.36, 1); }
    再窄(<760)整表换成卡片视图(见 MobileCards) */
 @media (prefers-reduced-motion: reduce) {
   tbody { animation: none; }
-  .who, .num, .pill, .rank-cell, .tier-badge, .avatar, tbody tr { transition: none; }
+  .who, .num, .pill, .rank-cell, .tier-badge, .avatar, tbody tr, .obadge { transition: none; }
+  .obadge.on, .ob-pulse { animation: none; }
 }
 </style>

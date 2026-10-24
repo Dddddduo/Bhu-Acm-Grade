@@ -12,10 +12,12 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import RankTable from './components/RankTable.vue'
 import MobileCards from './components/MobileCards.vue'
 import CountUp from './components/CountUp.vue'
+import OnlineBar from './components/OnlineBar.vue'
 import { COLUMNS } from './columns.js'
 import { fetchCfLive, fetchCfContests, ratedGuess, CONTEST_CACHE_KEY } from './liveCf.js'
 import { fetchNcLive } from './liveNc.js'
 import { computeScore, assignLevels } from './score.js'
+import { isOnlineNow } from './online.js'
 
 const LIVE_EVERY_MS = 10 * 60 * 1000 // 每 10 分钟自动抓一轮(缓存在这之内直接复用,不重抓)
 const CACHE_KEY = 'bhu-acm-live-cache-v1'
@@ -249,6 +251,18 @@ function sharePct(n) {
   return todaySum.value ? Math.max(1, Math.round((n / todaySum.value) * 100)) : 0
 }
 
+// 当前在线的人:**不分新生/老登,全员合并展示**(按 cf_last_online 判定,口径见 online.js)。
+// 直接读 members + livePatch 原始补丁(不走 joined——joined 只含当前分组)。
+// 读 nowSec 的 computed -> online.js 里 30 秒一跳的定时器会驱动它自动重算,人下线不用等下一轮抓取。
+// 稳定排序:今日做题多的排前面,并列按姓名。
+const onlineMembers = computed(() => {
+  const live = livePatch.value
+  return members.value
+    .map((m) => ({ member: m, stats: live[String(m.id)] || null }))
+    .filter((r) => isOnlineNow(r.stats?.cf_last_online))
+    .sort((a, b) => todayOf(b) - todayOf(a) || (a.member.name || '').localeCompare(b.member.name || '', 'zh'))
+})
+
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
   return joined.value.filter(({ member: m }) => {
@@ -348,7 +362,7 @@ function logLive(cf, nc) {
     const c = cf[id] || {}
     const n = nc[id] || {}
     const cfPart = Object.keys(c).length
-      ? `CF: rating=${c.cf_rating ?? '—'} 最高=${c.cf_max_rating ?? '—'} 总题=${c.cf_total ?? '—'} 今日=${c.cf_today ?? '—'} 近30天=${c.cf_30d ?? '—'}`
+      ? `CF: rating=${c.cf_rating ?? '—'} 最高=${c.cf_max_rating ?? '—'} 总题=${c.cf_total ?? '—'} 今日=${c.cf_today ?? '—'} 近30天=${c.cf_30d ?? '—'} 上次在线=${c.cf_last_online ? new Date(c.cf_last_online * 1000).toLocaleString('zh-CN', { hour12: false }) : '—'}`
       : 'CF: 本轮未抓到(保留旧值)'
     const ncPart = Object.keys(n).length
       ? `牛客: Rating=${n.nc_rating ?? '—'} 总过题=${n.nc_total ?? '—'}`
@@ -460,7 +474,9 @@ onUnmounted(() => clearInterval(tickTimer))
         </div>
       </section>
 
-      <!-- 今日之星:CF 今日做题数前 3,podium 大卡,冠军居中放大;点卡直达 CF 主页 -->
+      <!-- 今日之星:CF 今日做题数前 3,podium 卡,冠军居中放大;点卡直达 CF 主页
+           整块按「紧凑版」排版(见 .stars / .pod 样式):卡片只留 奖牌+姓名+今日题数+占比,
+           总过题收进姓名行小字,纵向高度比原版明显矮一档 -->
       <section v-if="todayStars.length" class="stars">
         <div class="stars-head">
           <span class="stars-title">🌟 今日之星</span>
@@ -475,19 +491,16 @@ onUnmounted(() => clearInterval(tickTimer))
             :href="s.member.cf_handle ? `https://codeforces.com/profile/${s.member.cf_handle}` : null"
             target="_blank"
             rel="noopener"
-            :title="`今日解 ${s.today} 题 · 点击查看 ${s.member.name} 的 Codeforces 主页`"
+            :title="`今日解 ${s.today} 题 · CF 总过题 ${s.stats?.cf_total ?? '未定级'} · 点击查看 ${s.member.name} 的 Codeforces 主页`"
           >
             <span class="pod-medal">{{ ['🥇', '🥈', '🥉'][s.starRank - 1] }}</span>
-            <span class="pod-name">{{ s.member.name }}</span>
-            <span class="pod-class">{{ s.member.clazz }}</span>
+            <span class="pod-name">
+              {{ s.member.name }}
+              <small v-if="s.stats?.cf_total != null" class="pod-total" title="Codeforces 历史累计 AC 的不同题目数">{{ s.stats.cf_total }}</small>
+            </span>
             <span class="pod-num"><CountUp :value="s.today" /><small>题</small></span>
             <span class="pod-bar"><i :style="{ width: sharePct(s.today) + '%' }"></i></span>
             <span class="pod-share">占今日 {{ sharePct(s.today) }}%</span>
-            <span class="pod-total" title="该成员 Codeforces 历史累计 AC 的不同题目数">
-              CF 总过题
-              <b v-if="s.stats?.cf_total != null"><CountUp :value="s.stats.cf_total" /></b>
-              <b v-else class="unknown">未定级</b>
-            </span>
           </a>
         </div>
       </section>
@@ -499,6 +512,10 @@ onUnmounted(() => clearInterval(tickTimer))
           <small>今天的第一个 AC,就能点亮这张卡片 —— 谁先来?</small>
         </div>
       </section>
+
+      <!-- 当前在线:紧跟今日之星下方,谁此刻在 Codeforces 一眼可见(判定口径见 online.js)
+           全员合并展示:不分新生/老登,切分组不影响这里的人 -->
+      <OnlineBar :rows="onlineMembers" />
 
       <!-- 近期比赛:CF 正式轮(Div.1~4 / 1+2),不含 gym;最多 5 场,其余只提醒数量 -->
       <section v-if="contests.length" class="contests">
@@ -557,6 +574,7 @@ onUnmounted(() => clearInterval(tickTimer))
             <li><strong>CF Rating / CF 最高分</strong>:Codeforces 官方 API <code>user.info</code>,按官方段位上色。</li>
             <li><strong>CF 总做题 / CF 近30天</strong>:官方 API <code>user.status</code> 全部提交历史里,verdict=OK 的<strong>不同题目</strong>数(近30天为滚动30天窗口;同一题反复 AC 只算一道)。</li>
             <li><strong>CF 今日</strong>:北京时间今日 0 点起 AC 的不同题目数;今天还没抓到就显示<strong>未定级</strong>,绝不拿昨天的数冒充。</li>
+            <li><strong>在线状态</strong>:Codeforces 官方 API <code>user.info</code> 的 <code>lastOnlineTimeSeconds</code>(上次访问 CF 的时间)。<strong>30 分钟内</strong>上过 CF 算 <strong>Online now</strong>,否则显示离线时长;页面开着每 30 秒自动重算。今日之星下方的「当前在线」横条展示<strong>全员</strong>(新生+老登合并,不随分组切换变化)。</li>
             <li><strong>牛客 Rating</strong>:牛客 <code>rating-history</code> 接口最新一条记录的 Rating。该接口对带跨站 Origin 的请求会被 WAF 拦截,浏览器无法直连,经服务端代理(腾讯云 SCF Web 函数)获取。</li>
             <li><strong>牛客总过题</strong>:牛客个人主页官方统计「题已通过」数(按题目去重的 AC 题数,同一题反复 AC 只算一次,与 CF 总做题同口径),经代理读取,约每 10 分钟更新。</li>
             <li>数据缓存在浏览器里:打开页面先显示缓存,超过 10 分钟才自动重抓;页面开着每 10 分钟更新一轮。某人抓失败只跳过他(保留旧值),不影响别人。</li>
@@ -773,30 +791,30 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 .sum-label { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 .sum-card.accent .sum-num { color: var(--green); }
 
-/* 今日之星:podium 大卡区,金色渐变底,冠军居中放大 */
+/* 今日之星:podium 卡区(紧凑版),金色渐变底,冠军居中放大 */
 .stars {
   position: relative; overflow: hidden;
   background:
-    radial-gradient(520px 180px at 50% -40px, rgba(255, 199, 64, 0.28), transparent 70%),
+    radial-gradient(520px 150px at 50% -40px, rgba(255, 199, 64, 0.28), transparent 70%),
     linear-gradient(135deg, #fffdf4 0%, var(--card) 55%);
   border: 1.5px solid #f0d89a;
-  border-radius: 16px; padding: 16px 18px 18px;
+  border-radius: 16px; padding: 11px 16px 12px;
   box-shadow: 0 6px 22px rgba(160, 106, 0, 0.10);
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 .stars::before { /* 顶部一道流动金线,强调“领奖台”氛围 */
   content: ''; position: absolute; inset: 0 0 auto; height: 3px;
   background: linear-gradient(90deg, transparent, #f5b629 30%, #ffd97a 50%, #f5b629 70%, transparent);
 }
-.stars-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
-.stars-title { font-size: 16px; font-weight: 800; color: #8a5800; letter-spacing: 1px; }
-.stars-sub { font-size: 12.5px; color: var(--muted); }
+.stars-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.stars-title { font-size: 15px; font-weight: 800; color: #8a5800; letter-spacing: 1px; }
+.stars-sub { font-size: 12px; color: var(--muted); }
 .stars-sub b { color: var(--green); font-variant-numeric: tabular-nums; }
 
 .podium { display: grid; grid-template-columns: 1fr 1.25fr 1fr; gap: 12px; align-items: stretch; }
 .pod {
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  border-radius: 14px; padding: 14px 10px 12px; text-decoration: none !important;
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  border-radius: 12px; padding: 8px 10px 7px; text-decoration: none !important;
   color: var(--text); border: 1px solid var(--line); background: var(--card);
   box-shadow: 0 2px 10px rgba(28, 42, 90, 0.06);
   transition: transform 0.18s ease, box-shadow 0.18s ease;
@@ -812,7 +830,7 @@ main { margin-top: -14px; position: relative; z-index: 2; }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 .pod:hover { transform: translateY(-3px) scale(1.02); box-shadow: 0 8px 22px rgba(28, 42, 90, 0.14); }
-.pod-medal { font-size: 26px; line-height: 1; filter: drop-shadow(0 2px 3px rgba(160,106,0,0.25)); transform-origin: top center; animation: medal-swing 3.2s ease-in-out infinite; }
+.pod-medal { font-size: 20px; line-height: 1.1; filter: drop-shadow(0 2px 3px rgba(160,106,0,0.25)); transform-origin: top center; animation: medal-swing 3.2s ease-in-out infinite; }
 @keyframes medal-swing {
   0%, 100% { transform: rotate(0deg); }
   12% { transform: rotate(-10deg); }
@@ -820,26 +838,22 @@ main { margin-top: -14px; position: relative; z-index: 2; }
   36% { transform: rotate(-4deg); }
   48% { transform: rotate(0deg); }
 }
-.pod-name { font-size: 15px; font-weight: 700; margin-top: 4px; }
-.pod-class { font-size: 11.5px; color: var(--muted); }
-.pod-num { font-size: 30px; font-weight: 800; line-height: 1.15; font-variant-numeric: tabular-nums; color: var(--green); }
-.pod-num small { font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 2px; }
-.pod-bar { width: 78%; height: 5px; border-radius: 999px; background: #eef1f8; overflow: hidden; margin-top: 4px; }
+.pod-name { font-size: 14px; font-weight: 700; margin-top: 2px; display: inline-flex; align-items: center; gap: 6px; }
+.pod-num { font-size: 24px; font-weight: 800; line-height: 1.15; font-variant-numeric: tabular-nums; color: var(--green); }
+.pod-num small { font-size: 11px; font-weight: 600; color: var(--muted); margin-left: 2px; }
+.pod-bar { width: 78%; height: 4px; border-radius: 999px; background: #eef1f8; overflow: hidden; margin-top: 3px; }
 .pod-bar i {
   display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #ffd97a, #f5b629);
   transform-origin: left center; animation: bar-grow 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.45s backwards; /* 卡片落位后,占比条从 0 生长 */
 }
 @keyframes bar-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-.pod-share { font-size: 11px; color: #a06a00; margin-top: 3px; font-variant-numeric: tabular-nums; }
-/* CF 总过题标注:比"占今日"再沉稳一档,和今日题数区分开 */
+.pod-share { font-size: 10.5px; color: #a06a00; margin-top: 2px; font-variant-numeric: tabular-nums; }
+/* CF 总过题:收进姓名行的小尾标,悬停卡面 title 看完整说明,省掉整行高度 */
 .pod-total {
-  margin-top: 6px; padding-top: 6px; font-size: 11px; color: var(--muted);
-  border-top: 1px dashed #f0d89a; font-variant-numeric: tabular-nums;
+  font-size: 10.5px; font-weight: 600; color: var(--accent);
+  background: var(--accent-soft); border-radius: 999px; padding: 0 7px; line-height: 1.6;
+  font-variant-numeric: tabular-nums;
 }
-.pod-total b { color: var(--accent); font-size: 12.5px; font-weight: 700; margin-left: 3px; }
-.pod-total b.unknown { color: #b8bdd0; font-weight: 500; font-size: 11px; }
-.pod.slot1 .pod-total { font-size: 12px; }
-.pod.slot1 .pod-total b { font-size: 14px; }
 
 /* 冠军居中:更大、金色描边、轻微呼吸光晕(按槽位算,并列名次也不会错位) */
 .pod.slot1 {
@@ -848,9 +862,9 @@ main { margin-top: -14px; position: relative; z-index: 2; }
   box-shadow: 0 4px 18px rgba(214, 158, 46, 0.22);
   animation: pod-glow 2.6s ease-in-out infinite;
 }
-.pod.slot1 .pod-medal { font-size: 36px; }
-.pod.slot1 .pod-name { font-size: 17px; }
-.pod.slot1 .pod-num { font-size: 40px; }
+.pod.slot1 .pod-medal { font-size: 27px; }
+.pod.slot1 .pod-name { font-size: 15px; }
+.pod.slot1 .pod-num { font-size: 32px; }
 @keyframes pod-glow {
   0%, 100% { box-shadow: 0 4px 18px rgba(214, 158, 46, 0.22); }
   50% { box-shadow: 0 4px 26px rgba(214, 158, 46, 0.40); }
@@ -1028,20 +1042,20 @@ main { margin-top: -14px; position: relative; z-index: 2; }
   .search { min-width: 0; flex-basis: 100%; }
   .count { width: 100%; }
   .tab { padding: 8px 16px; }
-  /* 今日之星:窄屏保持三列领奖台,整体缩小一档 */
-  .stars { padding: 12px 10px 14px; }
-  .stars-head { margin-bottom: 10px; gap: 8px; }
-  .stars-title { font-size: 14px; }
-  .stars-sub { font-size: 11.5px; }
+  /* 今日之星:窄屏保持三列领奖台,在紧凑版基础上再收一档 */
+  .stars { padding: 10px 8px 10px; }
+  .stars-head { margin-bottom: 8px; gap: 8px; }
+  .stars-title { font-size: 13.5px; }
+  .stars-sub { font-size: 11px; }
   .podium { gap: 8px; }
-  .pod { padding: 10px 4px 9px; }
-  .pod-medal { font-size: 20px; }
-  .pod.slot1 .pod-medal { font-size: 27px; }
-  .pod-name { font-size: 13px; }
-  .pod.slot1 .pod-name { font-size: 14.5px; }
-  .pod-class { display: none; }
-  .pod-num { font-size: 22px; }
-  .pod.slot1 .pod-num { font-size: 28px; }
+  .pod { padding: 7px 4px 6px; }
+  .pod-medal { font-size: 16px; }
+  .pod.slot1 .pod-medal { font-size: 22px; }
+  .pod-name { font-size: 12px; gap: 4px; }
+  .pod.slot1 .pod-name { font-size: 13px; }
+  .pod-total { font-size: 9.5px; padding: 0 5px; }
+  .pod-num { font-size: 19px; }
+  .pod.slot1 .pod-num { font-size: 25px; }
   .pod-bar { width: 88%; }
   .empty-stars { padding: 14px; }
   .empty-crown { font-size: 24px; }

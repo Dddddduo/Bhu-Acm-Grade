@@ -8,6 +8,7 @@
 // ncTier     : true 表示按牛客官方 Rating 分段上色(见 TierBadge)
 // rankKey    : 上色时附带展示的 CF 段位名字段
 // hot        : 今日这类"活跃度"列,前端用高亮 pill 样式
+// online     : 在线状态列,值为 cf_last_online(unix 秒),渲染成 Online/离线徽章
 // hidden     : true 表示暂时不展示(数据照常采集,以后放开)
 //
 // 数据全部浏览器实时抓取:CF 列直连官方 API;牛客 Rating / 总过题 经 Cloudflare Worker
@@ -16,6 +17,7 @@
 // ============================================================
 
 export const COLUMNS = [
+  { key: 'cf_last_online', label: '在线状态', online: true },
   { key: 'cf_rating',     label: 'CF Rating', cfTier: true, rankKey: 'cf_rank' },
   { key: 'cf_max_rating', label: 'CF 最高分', cfTier: true, rankKey: 'cf_max_rank' },
   { key: 'cf_total',      label: 'CF 总做题' },

@@ -78,6 +78,8 @@ export async function fetchCfLive(members, onEach) {
           cf_max_rating: u.maxRating ?? null,
           cf_rank: u.rank ?? '',
           cf_max_rank: u.maxRank ?? '',
+          // 上次访问 CF 的时间(unix 秒)-> 在线状态,判定口径见 online.js
+          cf_last_online: u.lastOnlineTimeSeconds ?? null,
         })
       }
     }
