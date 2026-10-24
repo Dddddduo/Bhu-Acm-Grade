@@ -33,8 +33,11 @@
   { "id": 32, "group": "old", "name": "程思潺", "clazz": "软件25-1",    "student_id": "", "nowcoder_id": "517518474",  "cf_handle": "Sxq7", "qq": "321059577" },
   { "id": 33, "group": "old", "name": "王镝", "clazz": "计科24-1",    "student_id": "", "nowcoder_id": "885221873",  "cf_handle": "wangxiaofan", "qq": "550982237" },
   { "id": 34, "group": "old", "name": "杨佳多", "clazz": "计科24-1",    "student_id": "", "nowcoder_id": "251173666",  "cf_handle": "Litar", "qq": "2302695299" },
-  { "id": 35, "group": "old", "name": "张鑫", "clazz": "计科23-2",    "student_id": "", "nowcoder_id": "584331662",  "cf_handle": "baicheng", "qq": "3135315520" },
+  { "id": 35, "group": "old", "name": "张鑫", "clazz": "计科23-2",    "student_id": "", "nowcoder_id": "709825331",  "cf_handle": "baicheng", "qq": "3135315520" },
   { "id": 36, "group": "old", "name": "余锐", "clazz": "计icc25-2",    "student_id": "", "nowcoder_id": "722655696",  "cf_handle": "YYYRRRM", "qq": "3276879519" },
   { "id": 37, "group": "old", "name": "柴梦娇", "clazz": "计25-2",    "student_id": "", "nowcoder_id": "444642051",  "cf_handle": "Victoria_Isabelle", "qq": "3145998088" },
-  { "id": 38, "group": "old", "name": "黄文楷", "clazz": "软件24-3",    "student_id": "", "nowcoder_id": "131119498",  "cf_handle": "hhhkai", "qq": "2842850273" }
+  { "id": 38, "group": "old", "name": "黄文楷", "clazz": "软件24-3",    "student_id": "", "nowcoder_id": "131119498",  "cf_handle": "hhhkai", "qq": "2842850273" },
+  { "id": 39, "group": "old", "name": "祁钰伟", "clazz": "计科25-2",    "student_id": "", "nowcoder_id": "387397297",  "cf_handle": "qyw666", "qq": "3157418127" },
+  { "id": 40, "group": "old", "name": "宋惠泽", "clazz": "智能25-1",    "student_id": "", "nowcoder_id": "229558255",  "cf_handle": "songhuize", "qq": "475788464" },
+  { "id": 41, "group": "old", "name": "李子栋", "clazz": "计科24-3",    "student_id": "", "nowcoder_id": "480257256",  "cf_handle": "L_ing", "qq": "3038560434" }
 ]
