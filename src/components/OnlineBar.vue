@@ -64,23 +64,21 @@ defineProps({
 
 <style scoped>
 .online-bar {
-  display: flex; flex-direction: column; gap: 9px;
-  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
-  padding: 10px 16px; margin-bottom: 14px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 5px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 6px 10px; margin-bottom: 8px; box-shadow: var(--shadow);
 }
-.ob-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ob-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ob-head {
-  display: inline-flex; align-items: center; gap: 7px; flex: none;
-  font-size: 13px; font-weight: 700; color: var(--muted);
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  font-size: 11px; font-weight: 700; color: var(--muted);
 }
-.ob-head b { color: var(--green); font-size: 15px; font-variant-numeric: tabular-nums; }
-/* 没人在线:人数和绿点都弱化成灰,不假装热闹 */
+.ob-head b { color: var(--green); font-size: 13px; font-variant-numeric: tabular-nums; }
 .ob-head.quiet b { color: var(--muted); }
-/* 标题旁的呼吸绿点,和头像角标同一套视觉语言 */
 .ob-dot {
-  position: relative; width: 9px; height: 9px; flex: none;
+  position: relative; width: 7px; height: 7px; flex: none;
   border-radius: 50%; background: #22c55e;
-  box-shadow: 0 0 6px 1px rgba(34, 197, 94, 0.8);
+  box-shadow: 0 0 5px 1px rgba(34, 197, 94, 0.8);
 }
 .ob-dot.gray { background: #c3c9d9; box-shadow: none; }
 .ob-dot::after {
@@ -93,33 +91,30 @@ defineProps({
   0% { transform: scale(1); opacity: 0.8; }
   70%, 100% { transform: scale(2.6); opacity: 0; }
 }
-.ob-none { font-size: 12.5px; color: var(--muted); }
-.ob-list { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.ob-none { font-size: 11px; color: var(--muted); }
+.ob-list { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; }
 .ob-chip {
-  display: inline-flex; align-items: center; gap: 7px;
-  padding: 4px 12px 4px 5px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px 2px 3px; border-radius: 999px;
   border: 1px solid rgba(18, 161, 80, 0.35); background: var(--green-soft);
   color: var(--text); text-decoration: none !important;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
-  animation: chip-in 0.4s ease backwards; /* 上线的人逐个冒出来 */
+  animation: chip-in 0.4s ease backwards;
 }
-.ob-chip:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(18, 161, 80, 0.25); }
-:deep(.avatar) { width: 22px; height: 22px; font-size: 11px; }
-.ob-name { font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.ob-chip:hover { transform: translateY(-1px); box-shadow: 0 3px 8px rgba(18, 161, 80, 0.2); }
+:deep(.avatar) { width: 18px; height: 18px; font-size: 9px; }
+.ob-name { font-size: 11px; font-weight: 600; white-space: nowrap; }
 @keyframes chip-in {
-  from { opacity: 0; transform: translateY(6px) scale(0.92); }
+  from { opacity: 0; transform: translateY(4px) scale(0.96); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
-
-/* 最近上线一排:灰色系弱显示,和在线绿拉开层级,不抢"谁现在在线"的焦点 */
-.ob-recent-label { font-size: 12.5px; }
-.ob-dot-off { width: 9px; height: 9px; flex: none; border-radius: 50%; background: #c3c9d9; }
-.ob-chip.off {
-  border-color: var(--line); background: #f2f3f7; color: var(--muted);
-}
+.ob-recent { opacity: .78; }
+.ob-recent-label { font-size: 10.5px; }
+.ob-dot-off { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #c3c9d9; }
+.ob-chip.off { border-color: var(--line); background: #f2f3f7; color: var(--muted); }
 .ob-chip.off .ob-name { color: #5a6178; font-weight: 600; }
-.ob-chip.off:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(28, 42, 90, 0.12); }
-.ob-ago { font-size: 11px; color: #9aa1b5; white-space: nowrap; }
+.ob-chip.off:hover { transform: translateY(-1px); box-shadow: 0 3px 8px rgba(28, 42, 90, 0.1); }
+.ob-ago { font-size: 9px; color: #9aa1b5; white-space: nowrap; }
 
 @media (prefers-reduced-motion: reduce) {
   .ob-dot::after { animation: none; }

@@ -1,4 +1,15 @@
 :root {
+  --command-bg: #f7f5ff;
+  --command-side: #efedff;
+  --command-panel: #ffffff;
+  --command-text: #24213a;
+  --command-muted: #77728d;
+  --command-line: #e5e0f2;
+  --command-hover: #f0edff;
+  --command-accent: #7657e8;
+  --command-accent-soft: rgba(118, 87, 232, .12);
+  --command-green: #18a874;
+  --command-grid: rgba(104, 86, 170, .09);
   --bg: #f3f6fc;
   --bg-gradient-start: rgba(59, 108, 255, 0.08);
   --bg-gradient-end: #e8ecf6;
@@ -7,8 +18,8 @@
   --text: #1c2233;
   --muted: #64748b;
   --line: #e2e8f0;
-  --accent: #3b6cff;
-  --accent-soft: #eef3ff;
+  --accent: #7657e8;
+  --accent-soft: #f0edff;
   --green: #10b981;
   --green-soft: #ecfdf5;
   --shadow: 0 4px 12px rgba(28, 42, 90, 0.05);
@@ -54,7 +65,19 @@
 }
 
 :root[data-theme="dark"] {
-  --bg: #0a0e17;
+  --command-bg: #111024;
+  --command-side: #171432;
+  --command-panel: #1c183d;
+  --command-text: #f4f0ff;
+  --command-muted: #aaa3c4;
+  --command-line: #302957;
+  --command-hover: #292251;
+  --command-accent: #a78bfa;
+  --command-accent-soft: rgba(167, 139, 250, .16);
+  --command-green: #4adea1;
+  --command-grid: rgba(207, 195, 255, .09);
+
+  /* Brightened colors for dark mode to ensure perfect AAA contrast */
   --bg-gradient-start: rgba(99, 102, 241, 0.08);
   --bg-gradient-end: #0a0e17;
   --card: #131926;
@@ -62,8 +85,8 @@
   --text: #f3f4f6;
   --muted: #9ca3af;
   --line: #222d44;
-  --accent: #4f46e5;
-  --accent-soft: rgba(79, 70, 229, 0.15);
+  --accent: #a78bfa;
+  --accent-soft: rgba(167, 139, 250, .16);
   --green: #10b981;
   --green-soft: rgba(16, 185, 129, 0.12);
   --shadow: 0 4px 15px rgba(0, 0, 0, 0.35);

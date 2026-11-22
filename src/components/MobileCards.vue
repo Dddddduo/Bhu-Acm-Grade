@@ -25,6 +25,7 @@ const METRICS = [
 ]
 
 const MEDAL = { gold: '🥇', silver: '🥈', bronze: '🥉' }
+const emit = defineEmits(['open-profile'])
 
 function levelOf(row) {
   return props.levels.get(String(row.member.id)) || { rank: null, level: 'unranked' }
@@ -33,7 +34,7 @@ function levelOf(row) {
 
 <template>
   <div class="cards">
-    <div v-for="row in rows" :key="row.member.id" class="card">
+    <div v-for="row in rows" :key="row.member.id" class="card" @click="emit('open-profile', row.member)">
       <div class="card-head">
         <span v-if="showMedals" class="lvl" :class="levelOf(row).level">
           <template v-if="MEDAL[levelOf(row).level]">{{ MEDAL[levelOf(row).level] }}{{ levelOf(row).rank }}</template>
@@ -80,8 +81,8 @@ function levelOf(row) {
       </div>
 
       <div class="ids">
-        <a v-if="row.member.nowcoder_id" :href="`https://ac.nowcoder.com/acm/contest/profile/${row.member.nowcoder_id}`" target="_blank" rel="noopener">牛客 {{ row.member.nowcoder_id }}</a>
-        <a v-if="row.member.cf_handle" :href="`https://codeforces.com/profile/${row.member.cf_handle}`" target="_blank" rel="noopener">CF {{ row.member.cf_handle }}</a>
+        <a v-if="row.member.nowcoder_id" :href="`https://ac.nowcoder.com/acm/contest/profile/${row.member.nowcoder_id}`" target="_blank" rel="noopener" @click.stop>牛客 {{ row.member.nowcoder_id }}</a>
+        <a v-if="row.member.cf_handle" :href="`https://codeforces.com/profile/${row.member.cf_handle}`" target="_blank" rel="noopener" @click.stop>CF {{ row.member.cf_handle }}</a>
       </div>
     </div>
     <p v-if="rows.length === 0" class="no-data">没有匹配的成员</p>

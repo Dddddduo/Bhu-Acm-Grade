@@ -16,7 +16,7 @@ const props = defineProps({
   sortDir: { type: String, default: 'desc' },
   showMedals: { type: Boolean, default: true },
 })
-const emit = defineEmits(['sort'])
+const emit = defineEmits(['sort', 'open-profile'])
 
 const MEDAL = { gold: '🥇', silver: '🥈', bronze: '🥉' }
 
@@ -53,7 +53,7 @@ function todayClass(v) {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="(row, i) in rows" :key="row.member.id">
+        <tr v-for="(row, i) in rows" :key="row.member.id" @click="emit('open-profile', row.member)">
           <td v-if="showMedals" class="col-rank sticky-col">
             <span
               class="rank-cell"
@@ -126,8 +126,8 @@ function todayClass(v) {
             </template>
           </td>
           <td class="col-links">
-            <a v-if="row.member.cf_handle" :href="`https://codeforces.com/profile/${row.member.cf_handle}`" target="_blank" rel="noopener">CF</a>
-            <a v-if="row.member.nowcoder_id" :href="`https://ac.nowcoder.com/acm/contest/profile/${row.member.nowcoder_id}`" target="_blank" rel="noopener">牛客</a>
+            <a v-if="row.member.cf_handle" :href="`https://codeforces.com/profile/${row.member.cf_handle}`" target="_blank" rel="noopener" @click.stop>CF</a>
+            <a v-if="row.member.nowcoder_id" :href="`https://ac.nowcoder.com/acm/contest/profile/${row.member.nowcoder_id}`" target="_blank" rel="noopener" @click.stop>牛客</a>
           </td>
         </tr>
         <tr v-if="rows.length === 0">
@@ -156,7 +156,7 @@ th, td {
 th { font-size: 12px; }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:nth-child(even) { background: var(--stripe); }
-tbody tr { transition: background 0.25s ease; background: var(--card); }
+tbody tr { transition: background 0.25s ease; background: var(--card); cursor: pointer; }
 tbody tr:hover { background: var(--accent-soft); }
 /* ★ 悬停行:头像+姓名、数字、奖牌、段位徽章整体放大 —— 幅度给足、带轻微过冲回弹,过渡丝滑醒目
    transform 不挤动布局;吸附列是 sticky,scale 照常生效 */

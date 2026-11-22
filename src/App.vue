@@ -1,1132 +1,369 @@
 <script setup>
-// 主页面:读 members.json 渲染,数据实时抓取(CF 直连官方 API;牛客只走 Cloudflare Worker
-// 代理,见 liveNc.js —— 牛客页面对跨站 Origin 会被 WAF 拦,浏览器直连拿不到)。
-// ★ 进页面先用 localStorage 缓存立刻渲染,缓存不超过 LIVE_EVERY_MS 就不再重新调三方;
-//   页面开着每隔 LIVE_EVERY_MS 自动抓一轮,抓完写回缓存。
-// ★ 总分/名次见 score.js:CF 75%(Rating30/最高5/近30天10/总题30)+ 牛客 25%(Rating10/总过题15);
-//   按总分排,前 12% 金牌、24% 银牌、36% 铜牌(向上取整),其余/没数据 = 未定级。
-//   ★ 奖牌只挂新生榜;老登榜不显示评级列,页面标注「排名不分先后」。
-// 抓到的值进 livePatch + localStorage;抓失败的人跳过、保留旧值(宁旧勿丢)。
-// Worker 不可用 -> 提示一次,牛客列显示未定级,CF 列照常。
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import RankTable from './components/RankTable.vue'
-import MobileCards from './components/MobileCards.vue'
-import CountUp from './components/CountUp.vue'
-import OnlineBar from './components/OnlineBar.vue'
-import StudioAnalytics from './components/StudioAnalytics.vue'
-import { COLUMNS } from './columns.js'
-import { fetchCfLive, fetchCfContests, ratedGuess, CONTEST_CACHE_KEY, RECENT_CONTEST_MAX } from './liveCf.js'
-import { fetchNcLive } from './liveNc.js'
-import { computeScore, assignLevels } from './score.js'
-import { isOnlineNow, hasOnlineData, lastActiveSec } from './online.js'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import LeaderboardView from './views/LeaderboardView.vue'
+import MemberProfileView from './views/MemberProfileView.vue'
+import ContestArenaView from './views/ContestArenaView.vue'
+import DevLogView from './views/DevLogView.vue'
+import logoUrl from '../img/duihui.png'
+import { fetchCfContests, CONTEST_CACHE_KEY } from './liveCf.js'
+import { fetchVisitorEnvironment, weatherIcon, weatherLabel } from './visitorEnvironment.js'
+import { daysUntil, fetchExchangeRates, fetchHitokoto, fetchHoliday, fetchMetalPrices, formatHolidayDate } from './globalSignals.js'
 
-const LIVE_EVERY_MS = 10 * 60 * 1000 // 每 10 分钟自动抓一轮(缓存在这之内直接复用,不重抓;在线窗口 30 分钟,见 online.js)
 const CACHE_KEY = 'bhu-acm-live-cache-v1'
-
-const members = ref([])
-const loading = ref(true)
-const loadError = ref('')
-
-// 实时抓到的值:{ 成员id: 补丁字段 } —— 同时写进 localStorage,
-// 下次进页面立刻用缓存渲染,不用等三方接口(见 loadCache / saveCache)
-const livePatch = ref({})
-// 最近一次实时抓取完成时间:**数字时间戳(Date.now())**
-// 曾有坑:这里存 toLocaleString 字符串,Chrome 中文下是 "2026/10/19 21:16:30",
-// replace(' ','T') 后 new Date() 解析成 NaN -> 超期判断永远 false -> 页面再也不自动刷
-const liveAt = ref(0)
-const liveBusy = ref(false) // 正在抓取
-const liveError = ref('') // CF 侧最近一次抓取失败原因
-const ncHint = ref('') // 牛客侧提示(代理不可用 / 取数失败)
-
-// localStorage 缓存读写:全程 try/catch(无痕模式 / 配额满会抛),读写失败当没缓存用
-function loadCache() {
-  try {
-    const raw = localStorage.getItem(CACHE_KEY)
-    if (!raw) return null
-    const c = JSON.parse(raw)
-    if (!c || typeof c !== 'object' || !c.patch || typeof c.patch !== 'object') return null
-    if (!Number.isFinite(c.at) || c.at > Date.now()) return null // 时间戳异常/未来时间,视为脏缓存
-    return c
-  } catch {
-    return null
-  }
-}
-function saveCache() {
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ at: liveAt.value, patch: livePatch.value }))
-  } catch {
-    /* 存不进去就算了,不影响页面 */
-  }
-}
-
-const search = ref('')
-const clazzFilter = ref('')
-const group = ref('fresh') // 新生 / 老登分开看
-// 排序默认:新生按积分总分(奖牌按总分切,第一眼看到正确名次);老登按 CF 最高分
-const sortKey = ref(defaultSortFor('fresh'))
-const sortDir = ref('desc')
-
-function defaultSortFor(g) {
-  return g === 'old' ? 'cf_max_rating' : 'score'
-}
-function selectGroup(g) {
-  group.value = g
-  clazzFilter.value = ''
-  sortKey.value = defaultSortFor(g)
-  sortDir.value = 'desc'
-}
-
-// 排序取值:数值列直接从行数据里取;没数据 = 排最后(-Infinity)
-function rowValue(row, key) {
-  const v = row.stats?.[key]
-  return typeof v === 'number' && Number.isFinite(v) ? v : -Infinity
-}
-
-// 窄屏换卡片视图,表格不用左右划
-const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 760)
-function onResize() {
-  isMobile.value = window.innerWidth < 760
-}
-onMounted(() => window.addEventListener('resize', onResize))
-onUnmounted(() => window.removeEventListener('resize', onResize))
-
-// ---------- 近期比赛(Div.1~4 / 1+2,不含 gym) ----------
-// contests: { id, name, phase, startTimeSeconds, durationSeconds, ratingConfirmed } 最多 3 条;
-// restCount: 窗口内没展示出来的场数,只做数字提醒。
-// 「可计算 Rating」标注:已结束的以 contest.ratingChanges 实锤为准(ratingConfirmed),
-// 未结束的按名称启发式预估(ratedGuess),文案区分「计分 / 预计计分」。
-const contests = ref([])
-const restCount = ref(0)
-const contestsAt = ref(0) // 最近一次比赛数据更新时间戳
-const CONTEST_EVERY_MS = 30 * 60 * 1000 // 比赛列表变化慢,单独 30 分钟 TTL(成员缓存没过期时也会补抓)
-
-function loadContestCache() {
-  try {
-    const c = JSON.parse(localStorage.getItem(CONTEST_CACHE_KEY))
-    if (c && Array.isArray(c.list) && Number.isFinite(c.at) && c.at <= Date.now()) {
-      // 旧缓存可能存着上限改小前的多条(如 RECENT_MAX 5→3),读入时按新上限截断
-      const shown = c.list.slice(0, RECENT_CONTEST_MAX)
-      contests.value = shown
-      restCount.value = (c.rest || 0) + (c.list.length - shown.length)
-      contestsAt.value = c.at
-    }
-  } catch {
-    /* 没缓存就用空的 */
-  }
-}
-function saveContestCache() {
-  try {
-    localStorage.setItem(
-      CONTEST_CACHE_KEY,
-      JSON.stringify({ at: contestsAt.value, list: contests.value, rest: restCount.value })
-    )
-  } catch {
-    /* 存不进去就算了 */
-  }
-}
-
-async function refreshContests() {
-  if (contestsAt.value && Date.now() - contestsAt.value < CONTEST_EVERY_MS) return // 比赛缓存没超期,不重抓
-  const r = await fetchCfContests()
-  if (!r) return // 失败保留旧值,绝不清空
-  contests.value = r.contests
-  restCount.value = r.rest
-  contestsAt.value = r.fetchedAt
-  saveContestCache()
-}
-
-// 北京时间「MM月d日 HH:mm」;跨天的加「周X」帮判断别记错
-function fmtCfTime(sec) {
-  const d = new Date((sec + 8 * 3600) * 1000)
-  const pad = (n) => String(n).padStart(2, '0')
-  const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getUTCDay()]
-  return `${pad(d.getUTCMonth() + 1)}月${pad(d.getUTCDate())}日 ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} · ${week}`
-}
-function phaseText(phase) {
-  return phase === 'FINISHED' ? '已结束' : phase === 'CODING' ? '进行中' : '即将开始'
-}
-function contestUrl(id) {
-  return `https://codeforces.com/contests/${id}`
-}
-function ratedTag(c) {
-  if (c.phase === 'FINISHED')
-    return c.ratingConfirmed ? { t: '计Rating分', cls: 'yes' } : { t: '不计分', cls: 'no' }
-  return ratedGuess(c.name) ? { t: '计Rating分', cls: 'maybe' } : { t: '预计不计分', cls: 'no' }
-}
-const ratedContestCount = computed(() => contests.value.filter((c) => ratedTag(c).cls !== 'no').length)
-
-// ---------- 比赛倒计时:每秒一跳,实时显示「距开始/距结束 还有 X天X小时X分X秒」 ----------
-// 一个 ref 当秒针,模板里所有倒计时都读它 -> Vue 每秒精准重渲染这几个 span
-const nowTick = ref(Date.now())
-let cdTimer = null
-onMounted(() => {
-  cdTimer = setInterval(() => { nowTick.value = Date.now() }, 1000)
-})
-onUnmounted(() => {
-  if (cdTimer) clearInterval(cdTimer)
-})
-
-// 剩余秒数 -> 「X天X小时X分X秒」(高位为 0 就省略,最简只留「X秒」)
-function fmtRemain(sec) {
-  let s = Math.max(0, Math.floor(sec))
-  const d = Math.floor(s / 86400); s -= d * 86400
-  const h = Math.floor(s / 3600);  s -= h * 3600
-  const m = Math.floor(s / 60);    s -= m * 60
-  const parts = []
-  if (d) parts.push(`${d}天`)
-  if (d || h) parts.push(`${h}小时`)
-  if (d || h || m) parts.push(`${m}分`)
-  parts.push(`${s}秒`)
-  return parts.join('')
-}
-
-// 一场比赛的倒计时:{ label, value, remain, live } —— 没开 -> 距开始;正在打 -> 距结束(红色警示);打完 -> null(不显示)
-function cdOf(c) {
-  const now = nowTick.value
-  if (c.phase === 'FINISHED') return null
-  const start = c.startTimeSeconds * 1000
-  const end = (c.startTimeSeconds + c.durationSeconds) * 1000
-  if (now < start) return { label: '距开始', value: fmtRemain((start - now) / 1000), remain: (start - now) / 1000, live: false }
-  if (now < end) return { label: '距结束', value: fmtRemain((end - now) / 1000), remain: (end - now) / 1000, live: true }
-  // phase 缓存还没翻成 FINISHED 的窗口期:已结束就不显示倒计时,避免显示负数/0
-  return null
-}
-
-const visibleColumns = computed(() => COLUMNS.filter((c) => !c.hidden))
-
-const groups = [
-  { key: 'fresh', label: '新生' },
-  { key: 'old', label: '老登' },
+const routes = [
+  { key: 'dashboard', label: '指挥中心', short: '01', icon: '◈' },
+  { key: 'leaderboard', label: '成员榜单', short: '02', icon: '↗' },
+  { key: 'contests', label: '赛事中心', short: '03', icon: '◉' },
+  { key: 'devlog', label: '开发日志', short: '04', icon: '✦' },
 ]
 
-const classes = computed(() =>
-  [...new Set(groupMembers.value.map((m) => m.clazz).filter(Boolean))].sort()
-)
-
-// 当前分组名单
-const groupMembers = computed(() => members.value.filter((m) => m.group === group.value))
-
-// 名单 + 实时数据合并,并算出积分总分。"今日"列按日期口径显示:cf_date 不是北京今天的,
-// 当没数据(今日列显示未定级,但**不影响其它项计分**——近30天/总分照常),
-// 绝不把昨天的数字挂成今天的(宁缺勿假)
-function bjDate() {
-  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
-}
-const joined = computed(() => {
-  const live = livePatch.value
-  const todayStr = bjDate()
-  return groupMembers.value.map((m) => {
-    let st = live[String(m.id)] || null
-    if (st && st.cf_date !== todayStr && 'cf_today' in st) st = { ...st, cf_today: null }
-    // 总分单独算:cf_today 不进积分,所以"今日过期"不影响 score
-    const raw = live[String(m.id)] || null
-    const score = raw ? computeScore(raw) : null
-    return { member: m, stats: st ? { ...st, score } : { score } }
-  })
-})
-
-// 奖牌等级:按当前分组内总分排名切 12% 金 / 24% 银 / 36% 铜(向上取整),没数据=未定级
-const levels = computed(() => assignLevels(joined.value))
-
-// 今日概览 / 今日之星:CF 今日做题口径(牛客只展示 Rating,没有今日列)
-function todayOf(r) {
-  return r.stats?.cf_today ?? 0
-}
-const todayActive = computed(() => joined.value.filter((r) => todayOf(r) > 0))
-const todaySum = computed(() => joined.value.reduce((s, r) => s + todayOf(r), 0))
-
-// 今日之星:按今日 CF 做题数取前三(并列同名次,后面顺延)
-const todayStars = computed(() => {
-  const ranked = [...todayActive.value].sort((a, b) => todayOf(b) - todayOf(a))
-  const out = []
-  let lastVal
-  let lastRank = 0
-  ranked.forEach((r, i) => {
-    const v = todayOf(r)
-    if (i === 0 || v !== lastVal) { lastRank = i + 1; lastVal = v }
-    if (lastRank <= 3) out.push({ ...r, starRank: lastRank, today: v })
-  })
-  return out.slice(0, 3)
-})
-// 展示辅助(纯视觉,不改口径):前三合计、每人占今日总量的百分比
-const topSum = computed(() => todayStars.value.reduce((s, r) => s + r.today, 0))
-function sharePct(n) {
-  return todaySum.value ? Math.max(1, Math.round((n / todaySum.value) * 100)) : 0
-}
-
-// 当前在线的人:**不分新生/老登,全员合并展示**(cf_last_online + cf_last_submit 双信号判定,口径见 online.js)。
-// 直接读 members + livePatch 原始补丁(不走 joined——joined 只含当前分组)。
-// 读 nowSec 的 computed -> online.js 里 30 秒一跳的定时器会驱动它自动重算,人下线不用等下一轮抓取。
-// 稳定排序:今日做题多的排前面,并列按姓名。
-const onlineMembers = computed(() => {
-  const live = livePatch.value
-  return members.value
-    .map((m) => ({ member: m, stats: live[String(m.id)] || null }))
-    .filter((r) => isOnlineNow(r.stats))
-    .sort((a, b) => todayOf(b) - todayOf(a) || (a.member.name || '').localeCompare(b.member.name || '', 'zh'))
-})
-
-// 最近下线的人:离线但不久前上过线(同样全员合并,不分新生/老登),按上次活跃时间倒序取 9 个
-// 两个信号都没抓到的人不进这个榜;读 nowSec -> 30 秒一跳自动重算在线判定
-const recentOfflineMembers = computed(() => {
-  const live = livePatch.value
-  return members.value
-    .map((m) => ({ member: m, stats: live[String(m.id)] || null }))
-    .filter((r) => hasOnlineData(r.stats) && !isOnlineNow(r.stats))
-    .sort((a, b) => (lastActiveSec(b.stats) || 0) - (lastActiveSec(a.stats) || 0))
-    .slice(0, 9)
-})
-
-const filtered = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  return joined.value.filter(({ member: m }) => {
-    if (clazzFilter.value && m.clazz !== clazzFilter.value) return false
-    if (!q) return true
-    return [m.name, m.clazz, m.student_id, m.cf_handle, m.nowcoder_id]
-      .filter(Boolean)
-      .some((v) => String(v).toLowerCase().includes(q))
-  })
-})
-
-const sorted = computed(() => {
-  const dir = sortDir.value === 'asc' ? 1 : -1
-  return [...filtered.value].sort((a, b) => {
-    const va = rowValue(a, sortKey.value)
-    const vb = rowValue(b, sortKey.value)
-    return (va - vb) * dir
-  })
-})
-
-function onSort(key) {
-  if (sortKey.value === key) {
-    sortDir.value = sortDir.value === 'desc' ? 'asc' : 'desc'
-  } else {
-    sortKey.value = key
-    sortDir.value = 'desc'
-  }
-}
-
-async function loadJson(path) {
-  const res = await fetch(`${path}?t=${Date.now()}`)
-  if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`)
-  return res.json()
-}
-
-// ---------- 浏览器端定时抓取(10 分钟一轮 + localStorage 缓存) ----------
-// CF 官方 API 允许跨域(实测 ACAO: *)直连抓;牛客 rating-history 对跨站 Origin
-// 会被 WAF 拦(实测),必须经 Cloudflare Worker 代理(见 liveNc.js)。
-// 两家并发、各自内部有自己的限速闸门,互不干扰;
-// **抓到一个人就填一行**(onEach -> applyLive),不等全员完成,并写回缓存。
-// 任何一个人失败:跳过,保留旧值,绝不清空。
-
-// 单人补丁即时并入实时层:每次都是新对象,Vue 响应式立刻重渲染该行
-function applyLive(id, rec) {
-  livePatch.value = { ...livePatch.value, [id]: { ...(livePatch.value[id] || {}), ...rec } }
-  saveCache() // 抓一个存一个:中途关页面也不亏,下次进来立刻有数据
-}
-
-let liveTimer = null
-function onVisible() {
-  // 从别的标签页切回来,如果距上次抓取已超过一个周期,立刻补一轮
-  if (document.visibilityState !== 'visible') return
-  if (Date.now() - liveAt.value > LIVE_EVERY_MS) refreshLive()
-}
-async function refreshLive() {
-  if (liveBusy.value || !members.value.length) return
-  liveBusy.value = true
-  liveError.value = ''
-  ncHint.value = ''
-  // 近期比赛:独立一次请求(共用限速闸门),不拖累成员数据,失败静默保留旧值
-  refreshContests().catch((e) => console.warn('[live] contests:', e))
-  try {
-    const [cf, nc] = await Promise.all([
-      fetchCfLive(members.value, applyLive).catch((e) => {
-        console.warn('[live] CF:', e)
-        liveError.value = 'CF 实时获取失败(下一轮自动重试)'
-        return {}
-      }),
-      fetchNcLive(members.value, applyLive).catch((e) => {
-        console.warn('[live] 牛客:', e)
-        ncHint.value = e.proxyDown
-          ? '牛客列取数失败:请确认代理已部署(见 README 方案 B:重新粘贴 ncTencentScf.js 并部署;浏览器开 <代理URL>?uid=619886673 回包带 _v:"v4" 或正常出数即为最新版。CF 列不受影响)'
-          : '牛客 Rating 实时获取失败(下一轮自动重试)'
-        return {}
-      }),
-    ])
-    liveAt.value = Object.keys(cf).length || Object.keys(nc).length ? Date.now() : liveAt.value
-    saveCache()
-    logLive(cf, nc)
-  } finally {
-    liveBusy.value = false
-  }
-}
-
-// 把这一轮实时抓到的数据逐人打到浏览器控制台(F12 -> Console),方便核对
-// 抓取现场:哪个字段拿到了、哪个字段没拿到(缺失 = 该请求失败,沿用旧值)
-function logLive(cf, nc) {
-  const byId = Object.fromEntries(members.value.map((m) => [String(m.id), m]))
-  const ids = [...new Set([...Object.keys(cf), ...Object.keys(nc)])]
-  if (!ids.length) {
-    console.warn('[live] 本轮 CF / 牛客 都没抓到数据(全部沿用旧值)')
-    return
-  }
-  console.groupCollapsed(`[live] ${new Date().toLocaleString('zh-CN', { hour12: false })} 实时抓取 ${ids.length} 人`)
-  for (const id of ids) {
-    const name = byId[id]?.name || `#${id}`
-    const c = cf[id] || {}
-    const n = nc[id] || {}
-    const cfPart = Object.keys(c).length
-      ? `CF: rating=${c.cf_rating ?? '—'} 最高=${c.cf_max_rating ?? '—'} 总题=${c.cf_total ?? '—'} 今日=${c.cf_today ?? '—'} 近30天=${c.cf_30d ?? '—'} 上次在线=${c.cf_last_online ? new Date(c.cf_last_online * 1000).toLocaleString('zh-CN', { hour12: false }) : '—'} 最新提交=${c.cf_last_submit ? new Date(c.cf_last_submit * 1000).toLocaleString('zh-CN', { hour12: false }) : '—'}`
-      : 'CF: 本轮未抓到(保留旧值)'
-    const ncPart = Object.keys(n).length
-      ? `牛客: Rating=${n.nc_rating ?? '—'} 总过题=${n.nc_total ?? '—'}`
-      : '牛客: 本轮未抓到(保留旧值)'
-    console.log(`  ${name} —— ${cfPart} | ${ncPart}`)
-  }
-  console.groupEnd()
-}
-
-onMounted(async () => {
-  // 打开页面 = 先拿缓存秒开:表格立刻带数据出现,不再"空表等三方"
-  try {
-    members.value = await loadJson('data/members.json')
-  } catch (e) {
-    loadError.value = String(e.message || e)
-  } finally {
-    loading.value = false
-  }
-  loadContestCache() // 比赛区先带缓存渲染,不等抓取
-  // 比赛列表独立于成员数据:即便成员缓存在效期内不重抓,这里也按自己的 TTL 补一轮
-  refreshContests().catch((e) => console.warn('[live] contests:', e))
-  if (!members.value.length) return
-
-  const cached = loadCache()
-  if (cached) {
-    livePatch.value = cached.patch
-    liveAt.value = cached.at
-  }
-  // 缓存还在有效期内 -> 完全不调三方;超期(或没缓存)才抓一轮
-  if (Date.now() - liveAt.value > LIVE_EVERY_MS) refreshLive()
-  liveTimer = setInterval(onVisible, 60 * 1000) // 每分钟看一眼是否超期
-  document.addEventListener('visibilitychange', onVisible)
-})
-onUnmounted(() => {
-  clearInterval(liveTimer)
-  document.removeEventListener('visibilitychange', onVisible)
-})
-
-const updatedText = computed(() => {
-  if (liveBusy.value) return '实时更新中…'
-  if (liveAt.value) return `更新于 ${new Date(liveAt.value).toLocaleString('zh-CN', { hour12: false })}`
-  return '等待首轮抓取…'
-})
-
-// ---------- 顶部励志标语轮播(纯展示,不碰任何数据逻辑) ----------
-const TICKER_MS = 5000
-const TICKER_LINES = [
-  '今天的每一发 WA,都是在给明天的 AC 攒人品。',
-  'Rating 会波动,努力不会骗你。',
-  '题解看懂了不算会,独立 AC 才算数。',
-  '把会做的题全做对,就已经超过一半人。',
-  '别怕从零开始,榜单上每个人都曾是新人。',
-  '所有的一鸣惊人,都是厚积薄发。',
-  '今天不肯动脑,明天赛场流泪。',
-  '只做题不补题不利于成长。',
-  '分数没有意义，快乐才是真谛。',
-]
-const tickIdx = ref(Math.floor(Math.random() * TICKER_LINES.length))
-let tickTimer = null
+const currentRoute = ref(routeFromHash())
+const selectedMemberId = ref(memberIdFromHash())
 const isDark = ref(false)
+const sidebarCollapsed = ref(false)
+const members = ref([])
+const livePatch = ref({})
+const liveAt = ref(0)
+const contests = ref([])
+const contestAt = ref(0)
+const contestLoading = ref(false)
+const visitorEnvironment = ref(null)
+const visitorEnvironmentLoading = ref(false)
+const visitorEnvironmentError = ref('')
+const clockNow = ref(Date.now())
+const globalSignals = ref({ holiday: null, hitokoto: null, exchange: null, metals: null })
+const globalSignalsLoading = ref(true)
 
+function routeFromHash() {
+  const value = window.location.hash.replace(/^#\/?/, '')
+  if (value.startsWith('member/')) return 'member'
+  return routes.some((r) => r.key === value) ? value : 'dashboard'
+}
+function memberIdFromHash() {
+  const match = window.location.hash.match(/^#\/?member\/(\d+)/)
+  return match ? match[1] : ''
+}
+async function ensureContests() {
+  if (contestLoading.value || (contests.value.length && Date.now() - contestAt.value < 30 * 60 * 1000)) return
+  contestLoading.value = true
+  try {
+    const result = await fetchCfContests()
+    if (result) { contests.value = result.contests; contestAt.value = result.fetchedAt }
+  } finally { contestLoading.value = false }
+}
+async function ensureVisitorEnvironment() {
+  if (visitorEnvironmentLoading.value || visitorEnvironment.value) return
+  visitorEnvironmentLoading.value = true
+  visitorEnvironmentError.value = ''
+  try { visitorEnvironment.value = await fetchVisitorEnvironment() } catch (error) { visitorEnvironmentError.value = error.message || '环境数据暂不可用' } finally { visitorEnvironmentLoading.value = false }
+}
+async function ensureGlobalSignals() {
+  await ensureVisitorEnvironment()
+  const tasks = [
+    ['holiday', fetchHoliday],
+    ['hitokoto', fetchHitokoto],
+    ['exchange', fetchExchangeRates],
+    ['metals', fetchMetalPrices],
+  ]
+  await Promise.all(tasks.map(async ([key, loader]) => {
+    try { globalSignals.value[key] = await loader() } catch (error) { console.warn(`[global signal] ${key} unavailable:`, error) }
+  }))
+  globalSignalsLoading.value = false
+}
+function signalDaysUntil(date) { return daysUntil(date) }
+function signalHolidayDate(date) { return formatHolidayDate(date) }
+function navigate(key) {
+  window.location.hash = key
+  currentRoute.value = key
+  selectedMemberId.value = ''
+  if (key === 'contests') ensureContests()
+}
+function openMember(member) {
+  window.location.hash = `member/${member.id}`
+  currentRoute.value = 'member'
+  selectedMemberId.value = String(member.id)
+}
+function backToLeaderboard() {
+  navigate('leaderboard')
+}
+function onHashChange() {
+  currentRoute.value = routeFromHash()
+  selectedMemberId.value = memberIdFromHash()
+  if (currentRoute.value === 'contests') ensureContests()
+}
+function readStorage(key) {
+  try { return JSON.parse(localStorage.getItem(key) || 'null') } catch { return null }
+}
+function loadShellData() {
+  fetch(`data/members.json?t=${Date.now()}`).then((r) => r.json()).then((data) => { members.value = data }).catch(() => {})
+  const live = readStorage(CACHE_KEY)
+  if (live?.patch) { livePatch.value = live.patch; liveAt.value = live.at || 0 }
+  const contest = readStorage(CONTEST_CACHE_KEY)
+  if (Array.isArray(contest?.list)) contests.value = contest.list
+  if (Number.isFinite(contest?.at)) contestAt.value = contest.at
+}
+function applyTheme() {
+  const saved = localStorage.getItem('theme')
+  const preferred = window.matchMedia?.('(prefers-color-scheme: dark)').matches
+  isDark.value = saved === 'dark' || (!saved && preferred)
+  document.documentElement.toggleAttribute('data-command-theme', isDark.value)
+  if (isDark.value) document.documentElement.setAttribute('data-theme', 'dark')
+  else document.documentElement.removeAttribute('data-theme')
+}
 function toggleTheme() {
   isDark.value = !isDark.value
-  if (isDark.value) {
-    document.documentElement.setAttribute('data-theme', 'dark')
-    localStorage.setItem('theme', 'dark')
-  } else {
-    document.documentElement.removeAttribute('data-theme')
-    localStorage.setItem('theme', 'light')
-  }
+  localStorage.setItem('theme', isDark.value ? 'dark' : 'light')
+  applyTheme()
 }
-
-onMounted(() => {
-  tickTimer = setInterval(() => { tickIdx.value = (tickIdx.value + 1) % TICKER_LINES.length }, TICKER_MS)
-  const savedTheme = localStorage.getItem('theme')
-  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
-  if (savedTheme === 'dark' || (!savedTheme && prefersDark)) {
-    isDark.value = true
-    document.documentElement.setAttribute('data-theme', 'dark')
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  localStorage.setItem('sidebar-collapsed', sidebarCollapsed.value ? '1' : '0')
+}
+function cfStats(member) { return livePatch.value[String(member.id)] || {} }
+function todayValue(member) {
+  const stats = cfStats(member)
+  const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+  return stats.cf_date === today ? stats.cf_today || 0 : 0
+}
+const totalToday = computed(() => members.value.reduce((sum, member) => sum + todayValue(member), 0))
+const activeToday = computed(() => members.value.filter((member) => todayValue(member) > 0).length)
+const totalSolved = computed(() => members.value.reduce((sum, member) => sum + (cfStats(member).cf_total || 0), 0))
+const topRating = computed(() => Math.max(0, ...members.value.map((member) => cfStats(member).cf_rating || 0)))
+const onlineCount = computed(() => {
+  const threshold = Math.floor(Date.now() / 1000) - 30 * 60
+  return members.value.filter((member) => {
+    const stats = cfStats(member)
+    return Math.max(stats.cf_last_online || 0, stats.cf_last_submit || 0) >= threshold
+  }).length
+})
+const topPlayers = computed(() => [...members.value].sort((a, b) => {
+  return todayValue(b) - todayValue(a) || (cfStats(b).cf_rating || 0) - (cfStats(a).cf_rating || 0)
+}).slice(0, 5))
+const selectedMember = computed(() => members.value.find((member) => String(member.id) === String(selectedMemberId.value)))
+const updatedText = computed(() => liveAt.value ? new Date(liveAt.value).toLocaleString('zh-CN', { hour12: false }) : '等待首轮数据')
+const visitorClock = computed(() => {
+  const environment = visitorEnvironment.value
+  const format = (timeZone) => new Intl.DateTimeFormat('zh-CN', { timeZone, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(clockNow.value)
+  return { beijing: format('Asia/Shanghai'), utc: format('UTC'), local: environment?.timezone ? format(environment.timezone) : format(Intl.DateTimeFormat().resolvedOptions().timeZone) }
+})
+const visitorLocationText = computed(() => {
+  const environment = visitorEnvironment.value
+  if (!environment) return visitorEnvironmentLoading.value ? '正在定位访问环境…' : '访问环境暂不可用'
+  const regionNames = {
+    Jilin: '吉林省',
+    Heilongjiang: '黑龙江省',
+    Liaoning: '辽宁省',
+    Beijing: '北京市',
+    Shanghai: '上海市',
+    Tianjin: '天津市',
+    Chongqing: '重庆市',
+    Hebei: '河北省',
+    Shandong: '山东省',
+    Guangdong: '广东省',
+    Jiangsu: '江苏省',
+    Zhejiang: '浙江省',
+    Sichuan: '四川省',
+    Hubei: '湖北省',
+    Hunan: '湖南省',
+    Henan: '河南省',
+    Anhui: '安徽省',
+    Fujian: '福建省',
+    Jiangxi: '江西省',
+    Shaanxi: '陕西省',
+    Yunnan: '云南省',
+    Guizhou: '贵州省',
+    Gansu: '甘肃省',
+    Qinghai: '青海省',
+    Hainan: '海南省',
+    Shanxi: '山西省',
+    'Inner Mongolia': '内蒙古自治区',
+    Xinjiang: '新疆维吾尔自治区',
+    Tibet: '西藏自治区',
+    Ningxia: '宁夏回族自治区',
+    Guangxi: '广西壮族自治区',
+    'Hong Kong': '香港特别行政区',
+    Macao: '澳门特别行政区',
+    Taiwan: '台湾省',
+  }
+  const cityNames = {
+    Taobei: '洮北区',
+    Baicheng: '白城市',
+  }
+  const region = regionNames[environment.region] || environment.region
+  const city = cityNames[environment.city] || environment.city
+  const district = environment.district || ''
+  return [region, city, district].filter(Boolean).join(' · ') || environment.country
+})
+const visitorWeatherText = computed(() => {
+  const current = visitorEnvironment.value?.current
+  if (!current) return '—'
+  return `${Math.round(current.temperature_2m)}°C`
+})
+const visitorWeatherDetails = computed(() => {
+  const current = visitorEnvironment.value?.current
+  if (!current) return visitorEnvironmentError.value || '正在读取天气'
+  return `${weatherLabel(current.weather_code)} · 体感 ${Math.round(current.apparent_temperature)}° · 湿度 ${current.relative_humidity_2m}% · 风速 ${Math.round(current.wind_speed_10m)}km/h`
+})
+const visitorNetworkText = computed(() => {
+  const environment = visitorEnvironment.value
+  if (!environment) return '网络环境读取中'
+  return `${environment.network || '未知网络'}${environment.asn ? ` · AS${environment.asn}` : ''}`
+})
+const visitorCoordinates = computed(() => {
+  const environment = visitorEnvironment.value
+  if (!environment || !Number.isFinite(Number(environment.latitude)) || !Number.isFinite(Number(environment.longitude))) return '坐标读取中'
+  return `${Number(environment.latitude).toFixed(4)}, ${Number(environment.longitude).toFixed(4)}`
+})
+const deviceInfo = computed(() => {
+  const ua = navigator.userAgent || ''
+  const mobile = /Android|iPhone|iPod|Mobile/i.test(ua)
+  const tablet = /iPad|Tablet/i.test(ua) || (/Android/i.test(ua) && !/Mobile/i.test(ua))
+  const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : '浏览器'
+  const os = /Windows/i.test(ua) ? 'Windows' : /Mac OS X/i.test(ua) ? 'macOS' : /Android/i.test(ua) ? 'Android' : /iPhone|iPad|iPod/i.test(ua) ? 'iOS' : /Linux/i.test(ua) ? 'Linux' : '未知系统'
+  const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection
+  return {
+    type: tablet ? '平板设备' : mobile ? '移动设备' : '桌面设备',
+    browser,
+    os,
+    screen: `${window.screen.width} × ${window.screen.height}`,
+    connection: connection?.effectiveType || '未知类型',
+    downlink: connection?.downlink ? `${connection.downlink} Mbps` : '—',
+    online: navigator.onLine,
   }
 })
-onUnmounted(() => clearInterval(tickTimer))
+const visitorAsnText = computed(() => visitorEnvironment.value?.asn ? `AS${visitorEnvironment.value.asn}` : 'ASN 未知')
+const exchangeSummary = computed(() => {
+  const signal = globalSignals.value.exchange
+  return signal ? `1 人民币 = ${signal.usd.toFixed(4)} 美元` : '人民币 / 美元汇率暂不可用'
+})
+const exchangeDetails = computed(() => {
+  const signal = globalSignals.value.exchange
+  return signal ? `CNY → USD · ${signal.date}` : 'Frankfurter API'
+})
+const metalSummary = computed(() => {
+  const signal = globalSignals.value.metals
+  return signal ? `黄金 ¥${signal.gold.toFixed(2)} · 白银 ¥${signal.silver.toFixed(2)}` : '金银价格暂不可用'
+})
+const metalDetails = computed(() => {
+  const signal = globalSignals.value.metals
+  return signal ? `${signal.currency} / ${signal.unit} · XAU / XAG` : '金价接口暂不可用'
+})
+
+onMounted(() => {
+  applyTheme(); loadShellData(); window.addEventListener('hashchange', onHashChange)
+  const savedSidebar = localStorage.getItem('sidebar-collapsed')
+  sidebarCollapsed.value = savedSidebar === '1'
+  ensureVisitorEnvironment()
+  ensureGlobalSignals()
+  if (currentRoute.value === 'contests') ensureContests()
+  const clockTimer = setInterval(() => { clockNow.value = Date.now() }, 1000)
+  onUnmounted(() => clearInterval(clockTimer))
+})
+onUnmounted(() => { window.removeEventListener('hashchange', onHashChange) })
 </script>
 
 <template>
-  <div class="page">
-    <header class="hero">
-      <div class="hero-inner">
-        <button class="theme-toggle" @click="toggleTheme" :title="isDark ? '切换到亮色模式' : '切换到暗色模式'">
-          <span v-if="isDark">☀️</span>
-          <span v-else>🌙</span>
-        </button>
-        <h1>
-          <span class="logo zap zap-l">⚡</span>
-          <span class="title-text">北华大学程序设计工作室<b class="title-accent">BHU-ACM</b>榜单系统</span>
-          <span class="logo zap zap-r">⚡</span>
-        </h1>
-        <div class="stamp" :class="{ busy: liveBusy }">{{ updatedText }}</div>
-        <!-- 励志标语:占 hero 底部一整行 -->
-        <p class="ticker"><span class="ticker-q">“</span><Transition name="ticker-fade" mode="out-in"><span :key="tickIdx" class="ticker-line">{{ TICKER_LINES[tickIdx] }}</span></Transition><span class="ticker-q">”</span><span class="ticker-dots"><i v-for="(l, li) in TICKER_LINES" :key="li" :class="{ on: li === tickIdx }" @click="tickIdx = li" :title="l"></i></span></p>
+  <div class="command-app" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+    <aside class="command-sidebar">
+      <div class="brand-lockup">
+        <img class="brand-logo" :src="logoUrl" alt="北华大学 ACM 程序设计工作室队徽" />
+        <div class="brand-copy"><strong>BUH ACM</strong><small>ALGORITHM LAB</small></div>
       </div>
-    </header>
-
-    <main>
-      <!-- 新生 / 老登 切换 -->
-      <nav class="tabs">
-        <button
-          v-for="g in groups"
-          :key="g.key"
-          class="tab"
-          :class="{ on: group === g.key }"
-          @click="selectGroup(g.key)"
-        >
-          {{ g.label }}
-          <small>{{ members.filter((m) => m.group === g.key).length }} 人</small>
+      <button class="sidebar-toggle" @click="toggleSidebar" :title="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"><span>{{ sidebarCollapsed ? '→' : '←' }}</span><em>{{ sidebarCollapsed ? '展开' : '收起' }}</em></button>
+      <div class="sidebar-label">WORKSPACE</div>
+      <nav class="command-nav">
+        <button v-for="route in routes" :key="route.key" :class="{ active: currentRoute === route.key }" @click="navigate(route.key)">
+          <span class="nav-index">{{ route.short }}</span><span class="nav-icon">{{ route.icon }}</span><span class="nav-label">{{ route.label }}</span>
         </button>
       </nav>
-
-      <!-- 今日概览:CF 今日做题口径(数字滚动,抓取实时更新时不硬闪) -->
-      <section class="summary">
-        <div class="sum-card">
-          <div class="sum-num"><CountUp :value="groupMembers.length" /></div>
-          <div class="sum-label">{{ group === 'fresh' ? '在册新生' : '在册老登' }}</div>
-        </div>
-        <div class="sum-card accent">
-          <div class="sum-num"><CountUp :value="todayActive.length" /></div>
-          <div class="sum-label">今日Codeforces已刷题人数</div>
-        </div>
-        <div class="sum-card">
-          <div class="sum-num"><CountUp :value="todaySum" /></div>
-          <div class="sum-label">今日Codeforces合计题数</div>
-        </div>
-      </section>
-
-      <!-- 今日之星:CF 今日做题数前 3,podium 卡,冠军居中放大;点卡直达 CF 主页
-           整块按「紧凑版」排版(见 .stars / .pod 样式):卡片只留 奖牌+姓名+今日题数+占比,
-           总过题收进姓名行小字,纵向高度比原版明显矮一档 -->
-      <section v-if="todayStars.length" class="stars">
-        <div class="stars-head">
-          <span class="stars-title">🌟 今日之星</span>
-          <span class="stars-sub">今日 CF 已解 <b>{{ todaySum }}</b> 题,前三合计 <b>{{ topSum }}</b> 题 —— 向 TA 们看齐!</span>
-        </div>
-        <div class="podium">
-          <a
-            v-for="(s, i) in todayStars"
-            :key="s.member.id"
-            class="pod"
-            :class="'slot' + (i + 1)"
-            :href="s.member.cf_handle ? `https://codeforces.com/profile/${s.member.cf_handle}` : null"
-            target="_blank"
-            rel="noopener"
-            :title="`今日解 ${s.today} 题 · CF 总过题 ${s.stats?.cf_total ?? '未定级'} · 点击查看 ${s.member.name} 的 Codeforces 主页`"
-          >
-            <span class="pod-medal">{{ ['🥇', '🥈', '🥉'][s.starRank - 1] }}</span>
-            <span class="pod-name">
-              {{ s.member.name }}
-              <small v-if="s.stats?.cf_total != null" class="pod-total" title="Codeforces 历史累计 AC 的不同题目数">{{ s.stats.cf_total }}</small>
-            </span>
-            <span class="pod-num"><CountUp :value="s.today" /><small>题</small></span>
-            <span class="pod-bar"><i :style="{ width: sharePct(s.today) + '%' }"></i></span>
-            <span class="pod-share">占今日 {{ sharePct(s.today) }}%</span>
-          </a>
-        </div>
-      </section>
-      <!-- 今日还没人刷题:激励占位,这块永远不空 -->
-      <section v-else-if="!loading && groupMembers.length" class="stars empty-stars">
-        <span class="empty-crown">👑</span>
-        <div class="empty-text">
-          <b>今日之星 · 虚位以待</b>
-          <small>今天的第一个 AC,就能点亮这张卡片 —— 谁先来?</small>
-        </div>
-      </section>
-
-      <!-- 当前在线:紧跟今日之星下方,谁此刻在 Codeforces 一眼可见(判定口径见 online.js)
-           全员合并展示:不分新生/老登,切分组不影响这里的人 -->
-      <OnlineBar :rows="onlineMembers" :recent="recentOfflineMembers" />
-
-      <!-- 数据可视化看板：实时团队战力多维图表分析 -->
-      <StudioAnalytics v-if="!loading && joined.length" :joinedRows="joined" :groupName="group" />
-
-      <!-- 近期比赛:CF 正式轮(Div.1~4 / 1+2),不含 gym;最多 3 场,其余只提醒数量 -->
-      <section v-if="contests.length" class="contests">
-        <div class="ctests-head">
-          <span class="ctests-title">📅 近期比赛</span>
-          <span class="ctests-sub">
-            Codeforces 正式轮(Div.1~4 / 1+2,不含 Gym)·
-            <b>{{ ratedContestCount }}</b> 场可计算 Codeforces Rating<template v-if="restCount"> · 另有 {{ restCount }} 场未列出。Div.1 > 牛客挑战赛 > Div.2 > 牛客练习赛 > Div.3 > 牛客小白月赛 > 牛客周赛 ≈ Div.4</template>
-          </span>
-        </div>
-        <ul class="ctests-list">
-          <li v-for="c in contests" :key="c.id" class="ctest">
-            <span class="ctest-phase" :class="{ live: c.phase === 'CODING', done: c.phase === 'FINISHED' }">
-              {{ phaseText(c.phase) }}
-            </span>
-            <div class="ctest-main">
-              <a class="ctest-name" :href="contestUrl(c.id)" target="_blank" rel="noopener" :title="`点击进入 Codeforces 比赛页(第 ${c.id} 场)`">
-                {{ c.name }} <span class="ctest-ext">↗</span>
-              </a>
-              <span class="ctest-time">🕐 {{ fmtCfTime(c.startTimeSeconds) }}<template v-if="c.phase !== 'FINISHED'"> · 时长 {{ Math.round(c.durationSeconds / 3600 * 10) / 10 }}h</template></span>
-              <!-- 实时倒计时:秒级跳动;24 小时内开场高亮提醒,正在打变红「距结束」 -->
-              <span
-                v-if="cdOf(c)"
-                class="ctest-cd"
-                :class="{ soon: !cdOf(c).live && cdOf(c).remain < 86400, 'cd-live': cdOf(c).live }"
-                :title="cdOf(c).live ? '比赛正在进行,这是剩余时间' : '距比赛开始还有(实时倒计时)'"
-              >
-                <span class="cd-label">{{ cdOf(c).label }}</span>
-                <b>{{ cdOf(c).value }}</b>
-                <span v-if="cdOf(c).live" class="cd-note">正在进行中</span>
-              </span>
-            </div>
-            <span class="ctest-rated" :class="ratedTag(c).cls" :title="ratedTag(c).cls === 'maybe' ? '按赛制惯例预估,CF 赛前不公布 rated 状态' : ''">
-              {{ ratedTag(c).t }}
-            </span>
-          </li>
-        </ul>
-        <p v-if="restCount" class="ctest-more">
-          另有 {{ restCount }} 场未展示(只保留最近 3 场,打完的超过 7 天自动移出列表)——
-          <a href="https://codeforces.com/contests" target="_blank" rel="noopener">全部比赛 ↗</a>
-        </p>
-      </section>
-
-      <!-- 抓取提示条:牛客代理 / CF 失败 -->
-      <div v-if="ncHint || liveError" class="notice">
-        <div v-if="ncHint" class="notice-line">🔌 {{ ncHint }}</div>
-        <div v-if="liveError" class="notice-line">⚠️ {{ liveError }}</div>
+      <div class="sidebar-bottom">
+        <div class="system-state"><i></i><span>DATA LINK ONLINE</span></div>
+        <button class="theme-button" @click="toggleTheme"><span>{{ isDark ? '☼' : '◐' }}</span>{{ isDark ? '亮色界面' : '暗色界面' }}</button>
+        <a href="https://github.com/Dddddduo/Bhu-Acm-Grade" target="_blank" rel="noopener">GITHUB REPOSITORY ↗</a>
       </div>
+    </aside>
 
-      <!-- 数据口径说明 -->
-      <details class="rules">
-        <summary>📐 各列数据怎么来的?</summary>
-        <div class="rules-body">
-          <ul class="rule-notes">
-            <li><strong>奖牌</strong>(仅新生榜):按总分排名,前 12% 金牌、随后 24% 银牌、随后 36% 铜牌(名额向上取整);排在奖牌线之后、或完全没有数据的人显示<strong>未定级</strong>。<strong>老登榜不评奖牌</strong>,表格不显示评级列——数据仅供参考,<strong>排名不分先后</strong>。</li>
-            <li><strong>CF Rating / CF 最高分</strong>:Codeforces 官方 API <code>user.info</code>,按官方段位上色。</li>
-            <li><strong>CF 总做题 / CF 近30天</strong>:官方 API <code>user.status</code> 全部提交历史里,verdict=OK 的<strong>不同题目</strong>数(近30天为滚动30天窗口;同一题反复 AC 只算一道)。</li>
-            <li><strong>CF 今日</strong>:北京时间今日 0 点起 AC 的不同题目数;今天还没抓到就显示<strong>未定级</strong>,绝不拿昨天的数冒充。</li>
-            <li><strong>在线状态</strong>:两个信号任一命中即在线——① Codeforces 官方 API <code>user.info</code> 的 <code>lastOnlineTimeSeconds</code>(上次访问 CF 的时间)<strong>30 分钟内</strong>;② <code>user.status</code> 最新一次提交在 <strong>60 分钟内</strong>(官方"上次访问"字段更新滞后,有人正在交题它却不刷新,故补交题信号)。否则显示离线时长;页面开着每 30 秒自动重算。今日之星下方的「当前codeforces在线」横条展示<strong>全员</strong>(新生+老登合并,不随分组切换变化);没人在线也照常显示人数(0 + 「当前没有人在线」),横条下面另列一行「最近上线」:离线但不久前上过线的 9 个人,按上次活跃时间从近到远排。</li>
-            <li><strong>牛客 Rating</strong>:牛客 <code>rating-history</code> 接口最新一条记录的 Rating。该接口对带跨站 Origin 的请求会被 WAF 拦截,浏览器无法直连,经服务端代理(腾讯云 SCF Web 函数)获取。</li>
-            <li><strong>牛客总过题</strong>:牛客个人主页官方统计「题已通过」数(按题目去重的 AC 题数,同一题反复 AC 只算一次,与 CF 总做题同口径),经代理读取,约每 10 分钟更新。</li>
-            <li>数据缓存在浏览器里:打开页面先显示缓存,超过 10 分钟才自动重抓;页面开着每 10 分钟更新一轮。某人抓失败只跳过他(保留旧值),不影响别人。</li>
-            <li>默认排序:新生按<strong>总分</strong>,老登按 <strong>CF 最高分</strong>(仅排列展示,不代表名次——老登榜排名不分先后);点表头可按任意列单独排序。🌟 今日之星:按当天 CF 做题数取前 3。</li>
-          </ul>
-        </div>
-      </details>
+    <div class="command-main">
+      <header class="command-topbar">
+        <div><span class="eyebrow">BHU / COMPETITIVE PROGRAMMING</span><h1>{{ currentRoute === 'member' ? selectedMember?.name || '成员档案' : routes.find((route) => route.key === currentRoute)?.label }}</h1></div>
+        <div class="top-status"><span class="live-pip"></span>LIVE DATA <span class="top-divider"></span>{{ updatedText }}</div>
+      </header>
 
-      <div class="toolbar">
-        <input
-          v-model="search"
-          class="search"
-          type="search"
-          placeholder="搜索姓名 / 班级 / 学号 / 账号…"
-        />
-        <select v-model="clazzFilter" class="filter">
-          <option value="">全部班级</option>
-          <option v-for="c in classes" :key="c" :value="c">{{ c }}</option>
-        </select>
-        <span class="count">共 {{ sorted.length }} 人</span>
-      </div>
+      <main v-if="currentRoute === 'dashboard'" class="dashboard-view">
+        <section class="dashboard-hero">
+          <div class="hero-copy"><span class="hero-kicker">01 / COMMAND CENTER</span><h2>北华大学<br /><em>程序设计工作室</em></h2><div class="hero-brand-code">BHU · ACM / ALGORITHM LAB</div><p>竞赛数据中枢，记录每一场训练、每一次提交与每一个新的突破。</p><button class="hero-action" @click="navigate('leaderboard')">进入成员榜单 <span>↗</span></button></div>
+          <div class="hero-radar"><img class="hero-logo" :src="logoUrl" alt="BUH ACM 队徽" /><div class="radar-ring ring-one"></div><div class="radar-ring ring-two"></div><div class="radar-sweep"></div><span class="radar-dot dot-a"></span><span class="radar-dot dot-b"></span><span class="radar-dot dot-c"></span><span class="radar-label label-a">LIVE / 01</span><span class="radar-label label-b">SYNC / OK</span></div>
+          <div class="hero-foot"><span>EST. 2026</span><span>41 OPERATORS</span><span>CODEFORCES / NOWCODER</span></div>
+        </section>
 
-      <div class="score-explain">
-        <b>积分总分:</b><a href="https://codeforces.com/" target="_blank">Codeforces</a> 占 75 分(当前 Rating 30% + 最高 Rating 5% + 近30天做题 10% + 总做题 30%),<a href="https://ac.nowcoder.com/" target="_blank">牛客</a> 占 25 分(Rating 10% + 总过题 15%);无数据项按 0 计。(codeforces刷题占比比重较大)
-      </div>
-
-      <!-- 老登榜:不评奖牌,只列数据 -->
-      <p v-if="group === 'old'" class="no-order-tip">📌 老登榜不评奖牌，<strong>排名不分先后</strong>；下方顺序仅为当前排序列的结果。</p>
-
-      <p v-if="loading" class="hint">加载名单…</p>
-      <p v-else-if="loadError" class="hint error">
-        名单加载失败:{{ loadError }}<br />请检查 public/data/members.json。
-      </p>
-
-      <RankTable
-        v-else-if="!isMobile"
-        :rows="sorted"
-        :columns="visibleColumns"
-        :levels="levels"
-        :sort-key="sortKey"
-        :sort-dir="sortDir"
-        :show-medals="group === 'fresh'"
-        @sort="onSort"
-      />
-      <MobileCards v-else :rows="sorted" :levels="levels" :show-medals="group === 'fresh'" />
-    </main>
-
-    <footer class="foot">
-      <div class="foot-made">🛠️ 由北华大学程序设计工作室自研</div>
-      数据实时抓取 + 浏览器缓存:CF 各列直连官方 API · 牛客 Rating / 总过题数经服务端代理(腾讯云 SCF)·
-      名单维护:编辑 <code>public/data/members.json</code>
-      <div class="foot-feedback">
-        💡 如果有任何更改意见,请提交
-        <a href="https://github.com/Dddddduo/Bhu-Acm-Grade/issues" target="_blank" rel="noopener">
-          GitHub Issues ↗
-        </a>
-      </div>
-      <div class="foot-repo">
-        <a href="https://github.com/Dddddduo/Bhu-Acm-Grade" target="_blank" rel="noopener">
-          GitHub:Dddddduo/Bhu-Acm-Grade
-        </a>
-        <span class="foot-copy">© BHUACM2026</span>
-      </div>
-    </footer>
+        <section class="environment-grid"><article class="environment-card visitor-card"><div class="environment-card-head"><div><span class="panel-kicker">VISITOR ENVIRONMENT</span><h3>访问环境</h3></div><span class="environment-status"><i></i> SESSION</span></div><div class="environment-location"><strong>{{ visitorLocationText }}</strong><small>{{ visitorEnvironment?.source === 'browser' ? '浏览器精确定位' : 'IP 粗定位' }} · {{ visitorEnvironment?.country || '未知地区' }} · {{ visitorEnvironment?.timezone || '时区等待中' }}</small><div class="environment-detail-grid"><span><b>坐标</b>{{ visitorCoordinates }}</span><span><b>设备</b>{{ deviceInfo.type }} · {{ deviceInfo.os }}</span><span><b>浏览器</b>{{ deviceInfo.browser }} · {{ deviceInfo.screen }}</span><span><b>连接</b>{{ deviceInfo.connection }} · {{ deviceInfo.downlink }}</span><span><b>网络组织</b>{{ visitorEnvironment?.network || '未知网络' }}</span><span><b>网络标识</b>{{ visitorAsnText }} · {{ visitorEnvironment?.ipType || 'IP 类型未知' }}</span></div></div><div class="environment-weather"><span class="weather-symbol">{{ visitorEnvironment?.current ? weatherIcon(visitorEnvironment.current.weather_code) : '◌' }}</span><div><strong>{{ visitorWeatherText }}</strong><small>{{ visitorWeatherDetails }}</small></div></div></article><article class="environment-card signal-card"><div class="environment-card-head"><div><span class="panel-kicker">GLOBAL SIGNALS</span><h3>全球信号</h3></div><span class="clock-zone">LIVE FEED</span></div><div v-if="globalSignalsLoading" class="signal-loading">正在读取全球信号…</div><div v-else class="signal-grid"><article class="signal-item holiday-signal"><span class="signal-icon">⌁</span><div><small>NEXT HOLIDAY</small><strong>{{ globalSignals.holiday?.name || '暂无节假日数据' }}</strong><em v-if="globalSignals.holiday">{{ signalHolidayDate(globalSignals.holiday.date) }} · {{ signalDaysUntil(globalSignals.holiday.date) }} 天后</em><em v-else>接口暂不可用</em></div></article><article class="signal-item exchange-signal"><span class="signal-icon">¥</span><div><small>CNY / USD</small><strong>{{ exchangeSummary }}</strong><em>{{ exchangeDetails }}</em></div></article><article class="signal-item hitokoto-signal"><span class="signal-icon">✦</span><div><small>HITOKOTO / 一言</small><strong>{{ globalSignals.hitokoto?.text || '一言数据读取中' }}</strong><em>{{ globalSignals.hitokoto?.fromWho || globalSignals.hitokoto?.from || 'Hitokoto' }}</em></div></article><article class="signal-item metals-signal"><span class="signal-icon">Au</span><div><small>PRECIOUS METALS</small><strong>{{ metalSummary }}</strong><em>{{ metalDetails }}</em></div></article></div></article></section>
+      </main>
+      <main v-else-if="currentRoute === 'leaderboard'" class="embedded-view"><LeaderboardView :embedded="true" @open-profile="openMember" /></main>
+      <main v-else-if="currentRoute === 'member'" class="embedded-view"><MemberProfileView v-if="selectedMember" :member="selectedMember" :stats="cfStats(selectedMember)" @back="backToLeaderboard" /><div v-else class="placeholder-view"><h2>成员不存在</h2><button class="hero-action" @click="navigate('leaderboard')">返回成员榜单 <span>↗</span></button></div></main>
+      <main v-else-if="currentRoute === 'contests'" class="embedded-view"><ContestArenaView :contests="contests" :members="members" :live-patch="livePatch" /></main>
+      <main v-else-if="currentRoute === 'devlog'" class="embedded-view"><DevLogView /></main>
+      <main v-else class="placeholder-view"><span class="placeholder-index">04</span><span class="eyebrow">MODULE NOT FOUND</span><h2>页面不存在</h2><p>请从左侧导航选择一个有效模块。</p><button class="hero-action" @click="navigate('dashboard')">返回指挥中心 <span>↗</span></button></main>
+    </div>
   </div>
 </template>
 
-<style scoped>
-.theme-toggle {
-  position: absolute;
-  top: -6px;
-  left: 40px;
-  background: rgba(255, 255, 255, 0.12);
-  border: none;
-  border-radius: 50%;
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  cursor: pointer;
-  transition: background 0.2s, transform 0.2s;
-  z-index: 10;
-}
-.theme-toggle:hover {
-  background: rgba(255, 255, 255, 0.25);
-  transform: scale(1.1);
-}
-
-.page { max-width: 1440px; margin: 0 auto; padding: 0 20px 40px; }
-
-.hero {
-  background: linear-gradient(115deg, #16224d 0%, #2b4fae 55%, #3b6cff 100%);
-  margin: 0 -16px;
-  padding: 30px 0 26px;
-  color: #fff;
-}
-.hero-inner {
-  max-width: 1440px; margin: 0 auto; padding: 0 40px;
-  display: grid; grid-template-columns: 1fr; justify-items: center; gap: 14px;
-  position: relative;
-}
-/* 主标题:整行居中,加大加粗 + 金色下划线;流光艺术字 —— 渐变金在字面上来回扫 */
-.hero h1 {
-  font-size: 30px; font-weight: 800; letter-spacing: 1.5px;
-  display: flex; align-items: center; justify-content: center; gap: 12px;
-  position: relative; padding-bottom: 10px;
-}
-.title-text {
-  color: #fff; /* 不支持渐变裁切时的保底 */
-  background: linear-gradient(100deg, #dbe7ff 0%, #ffffff 18%, #ffd97a 34%, #fff6d8 46%, #ffffff 58%, #dbe7ff 78%, #ffffff 100%);
-  background-size: 220% 100%;
-  animation: title-shine 5.5s ease-in-out infinite;
-}
-.title-accent {
-  color: #ffd97a; font-weight: 900; font-style: normal; letter-spacing: 2px;
-  background: linear-gradient(100deg, #f5b629 0%, #fff3c4 25%, #ffe89a 40%, #f5b629 55%, #fff3c4 75%, #f5b629 100%);
-  background-size: 200% 100%;
-  animation: accent-shine 2.8s linear infinite;
-}
-@supports (-webkit-background-clip: text) or (background-clip: text) {
-  .title-text, .title-accent {
-    -webkit-background-clip: text; background-clip: text;
-    -webkit-text-fill-color: transparent; /* 渐变即字色;text-shadow 会透出,改用 drop-shadow */
+<style>
+.command-app { min-height: 100vh; display: flex; background: var(--command-bg); color: var(--command-text); }
+.command-sidebar { width: 240px; flex: 0 0 240px; min-height: 100vh; padding: 34px 24px 26px; border-right: 1px solid var(--command-line); display: flex; flex-direction: column; background: var(--command-side); transition: width .25s ease, flex-basis .25s ease, padding .25s ease; }.sidebar-collapsed .command-sidebar { width: 72px; flex-basis: 72px; padding-left: 12px; padding-right: 12px; }.brand-lockup { display: flex; align-items: center; gap: 11px; margin-bottom: 16px; }.brand-copy { min-width: 0; overflow: hidden; white-space: nowrap; }.brand-logo { width: 52px; height: 52px; flex: 0 0 52px; object-fit: contain; border-radius: 50%; background: #fff4bd; box-shadow: 0 0 0 1px var(--command-line), 0 0 22px rgba(118, 87, 232, .24); }.brand-lockup strong { display: block; font: 800 14px/1.1 Arial; letter-spacing: 1.5px; }.brand-lockup small { display: block; margin-top: 5px; color: var(--command-muted); font-size: 8px; letter-spacing: 1.5px; }.sidebar-toggle { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0 0 34px; padding: 7px 9px; border: 1px solid var(--command-line); background: transparent; color: var(--command-muted); text-align: left; font-size: 10px; }.sidebar-toggle:hover { border-color: var(--command-accent); color: var(--command-accent); }.sidebar-toggle span { color: var(--command-accent); font: 16px monospace; }.sidebar-toggle em { font-style: normal; }.sidebar-collapsed .sidebar-toggle { justify-content: center; padding: 7px 0; }.sidebar-collapsed .sidebar-toggle em,.sidebar-collapsed .brand-copy,.sidebar-collapsed .sidebar-label,.sidebar-collapsed .nav-label,.sidebar-collapsed .sidebar-bottom { display: none; }
+.sidebar-label,.eyebrow,.panel-kicker,.metric-label { color: var(--command-muted); font-size: 9px; font-weight: 800; letter-spacing: 1.8px; }.sidebar-label { margin-bottom: 16px; }.command-nav { display: grid; gap: 5px; }.command-nav button { border: 0; background: transparent; color: var(--command-muted); text-align: left; padding: 13px 10px; display: grid; grid-template-columns: 26px 22px 1fr; align-items: center; gap: 7px; font-size: 12px; }.command-nav button:hover,.command-nav button.active { color: var(--command-text); background: var(--command-hover); }.command-nav button.active { box-shadow: inset 3px 0 var(--command-accent); }.nav-index { font: 10px monospace; color: var(--command-muted); }.nav-icon { color: var(--command-accent); font-size: 16px; }.sidebar-bottom { margin-top: auto; display: grid; gap: 18px; font-size: 9px; color: var(--command-muted); }.system-state { display: flex; gap: 7px; align-items: center; color: var(--command-green); font-size: 9px; letter-spacing: 1px; }.system-state i,.tiny-live { width: 6px; height: 6px; border-radius: 50%; display: inline-block; background: var(--command-green); box-shadow: 0 0 10px var(--command-green); }.theme-button { padding: 0; border: 0; text-align: left; background: none; color: var(--command-muted); font-size: 10px; }.theme-button span { color: var(--command-accent); font-size: 16px; margin-right: 7px; }.sidebar-bottom a { color: var(--command-muted); font-size: 9px; letter-spacing: 1px; }
+.command-main { min-width: 0; flex: 1; padding: 0 44px 60px; }.command-topbar { max-width: 1280px; margin: 0 auto; min-height: 108px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--command-line); }.command-topbar h1 { margin-top: 9px; font-size: 21px; letter-spacing: -.4px; }.top-status { color: var(--command-muted); font: 10px monospace; display: flex; gap: 10px; align-items: center; }.live-pip { width: 7px; height: 7px; background: var(--command-accent); border-radius: 50%; box-shadow: 0 0 14px var(--command-accent); }.top-divider { width: 1px; height: 14px; background: var(--command-line); }.dashboard-view,.placeholder-view { max-width: 1280px; margin: 0 auto; }.dashboard-hero { min-height: 405px; position: relative; overflow: hidden; display: grid; grid-template-columns: 1fr 1fr; align-items: center; border-bottom: 1px solid var(--command-line); background: linear-gradient(105deg, transparent 0 45%, var(--command-grid) 45% 45.1%, transparent 45.1%); }.dashboard-hero::before { content: ''; position: absolute; inset: 0; background-image: linear-gradient(var(--command-line) 1px, transparent 1px), linear-gradient(90deg, var(--command-line) 1px, transparent 1px); background-size: 54px 54px; opacity: .24; mask-image: linear-gradient(90deg, #000, transparent 75%); }.hero-copy,.hero-foot { position: relative; z-index: 1; }.hero-copy h2 { margin: 18px 0 13px; font-size: clamp(38px, 5vw, 72px); line-height: .98; letter-spacing: -3px; }.hero-copy h2 em { color: var(--command-accent); font-style: normal; }.hero-brand-code { margin-top: 16px; color: var(--command-accent); font: 700 10px monospace; letter-spacing: 2px; }.hero-copy p { max-width: 410px; color: var(--command-muted); line-height: 1.7; font-size: 13px; }.hero-action { margin-top: 26px; border: 1px solid var(--command-accent); padding: 12px 16px; background: var(--command-accent); color: #fff; font-weight: 800; font-size: 11px; }.hero-action span { margin-left: 23px; font-size: 16px; }.hero-radar { position: relative; width: min(340px, 80%); aspect-ratio: 1; justify-self: center; border: 1px solid var(--command-line); border-radius: 50%; background: radial-gradient(circle, var(--command-accent-soft), transparent 58%); }.hero-logo { position: absolute; z-index: 1; inset: 24%; width: 52%; height: 52%; object-fit: contain; border-radius: 50%; opacity: .98; filter: drop-shadow(0 0 22px rgba(118, 87, 232, .5)); }.radar-ring { position: absolute; inset: 13%; border: 1px solid var(--command-line); border-radius: 50%; }.ring-two { inset: 29%; }.radar-sweep { position: absolute; inset: 0; border-radius: 50%; background: conic-gradient(from 0deg, transparent 0 78%, var(--command-accent-soft) 88%, transparent 92%); animation: sweep 4s linear infinite; }.radar-core { position: absolute; inset: 42%; display: grid; place-content: center; text-align: center; border: 1px solid var(--command-accent); border-radius: 50%; color: var(--command-accent); font: 700 12px/1.1 monospace; }.radar-core small { font-size: 8px; letter-spacing: 2px; }.radar-dot { position: absolute; width: 7px; height: 7px; background: var(--command-accent); border-radius: 50%; box-shadow: 0 0 14px var(--command-accent); }.dot-a { top: 21%; left: 66%; }.dot-b { top: 69%; left: 23%; }.dot-c { top: 78%; left: 72%; }.radar-label { position: absolute; color: var(--command-muted); font: 9px monospace; }.label-a { top: 17%; right: 4%; }.label-b { bottom: 15%; left: 4%; }.hero-foot { position: absolute; bottom: 23px; left: 0; right: 0; display: flex; gap: 28px; color: var(--command-muted); font: 9px monospace; }
+.metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--command-line); }.metric-card { min-height: 142px; padding: 23px 24px; border-right: 1px solid var(--command-line); }.metric-card:last-child { border-right: 0; }.metric-card strong { display: block; margin: 17px 0 5px; color: var(--command-text); font: 600 36px/1 monospace; letter-spacing: -3px; }.metric-primary strong { color: var(--command-accent); }.metric-note { color: var(--command-muted); font-size: 10px; }.metric-note .tiny-live { margin-right: 5px; }.environment-grid { display: grid; grid-template-columns: .9fr 1.1fr; gap: 1px; margin-top: 1px; background: var(--command-line); border-bottom: 1px solid var(--command-line); }.environment-card { min-height: 170px; padding: 22px 25px; background: var(--command-bg); }.signal-card { background: var(--command-panel); }.environment-card-head { display: flex; align-items: flex-start; justify-content: space-between; }.environment-card-head h3 { margin-top: 8px; font-size: 18px; }.environment-status,.clock-zone { color: var(--command-green); font: 8px monospace; letter-spacing: 1px; }.environment-status i { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: var(--command-green); box-shadow: 0 0 8px var(--command-green); }.environment-location { margin-top: 22px; }.environment-location strong { display: block; color: var(--command-text); font-size: 18px; }.environment-location small { display: block; margin-top: 6px; color: var(--command-muted); font: 9px monospace; }.environment-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 12px; margin-top: 13px; }.environment-detail-grid span { min-width: 0; overflow: hidden; color: var(--command-muted); font: 9px monospace; text-overflow: ellipsis; white-space: nowrap; }.environment-detail-grid b { margin-right: 7px; color: var(--command-accent); font-weight: 700; }.environment-weather { display: flex; align-items: center; gap: 12px; margin-top: 17px; }.weather-symbol { color: var(--command-accent); font: 30px monospace; }.environment-weather strong,.environment-weather small { display: block; }.environment-weather strong { font: 700 21px monospace; }.environment-weather small { margin-top: 3px; color: var(--command-muted); font-size: 10px; }.clock-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 28px; border: 1px solid var(--command-line); }.clock-grid div { min-height: 75px; padding: 12px; border-right: 1px solid var(--command-line); }.clock-grid div:last-child { border-right: 0; }.clock-grid span,.clock-grid small { display: block; color: var(--command-muted); font: 8px monospace; }.clock-grid strong { display: block; margin: 9px 0 4px; color: var(--command-accent); font: 700 18px monospace; }.clock-grid small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.signal-loading { min-height: 142px; display: grid; place-items: center; color: var(--command-muted); font: 10px monospace; }.signal-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 18px; }.signal-item { min-width: 0; display: flex; gap: 10px; min-height: 65px; padding: 10px; border: 1px solid var(--command-line); background: var(--command-bg); }.signal-icon { display: grid; place-items: center; flex: 0 0 24px; width: 24px; height: 24px; border: 1px solid var(--command-accent); color: var(--command-accent); font: 15px monospace; }.signal-item div { min-width: 0; }.signal-item small,.signal-item strong,.signal-item em { display: block; }.signal-item small { color: var(--command-muted); font: 8px monospace; letter-spacing: .6px; }.signal-item strong { overflow: hidden; margin-top: 6px; color: var(--command-text); font-size: 11px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }.signal-item em { overflow: hidden; margin-top: 5px; color: var(--command-muted); font: 9px monospace; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }.dashboard-link-card { position: relative; min-height: 210px; display: flex; align-items: flex-end; gap: 18px; overflow: hidden; cursor: pointer; border: 1px solid var(--command-line); transition: border-color .2s ease, transform .2s ease, background .2s ease; }.dashboard-link-card:hover { transform: translateY(-3px); border-color: var(--command-accent); background: var(--command-hover); }.dashboard-link-card::before { content: ''; position: absolute; inset: auto -50px -80px auto; width: 220px; height: 220px; border: 1px solid var(--command-accent); border-radius: 50%; opacity: .16; }.contests-link-card::before { border-radius: 0; transform: rotate(45deg); }.link-card-index { align-self: flex-start; color: var(--command-accent); font: 12px monospace; }.link-card-copy { position: relative; z-index: 1; }.link-card-copy h3 { margin: 10px 0; font-size: 25px; }.link-card-copy p { max-width: 330px; color: var(--command-muted); font-size: 11px; line-height: 1.7; }.link-card-action { display: inline-block; margin-top: 20px; color: var(--command-accent); font: 10px monospace; }.link-card-icon { position: absolute; top: 25px; right: 25px; color: var(--command-accent); font: 34px monospace; opacity: .8; }
+@keyframes sweep { to { transform: rotate(360deg); } }
+@media (max-width: 900px) { .command-sidebar { width: 190px; flex-basis: 190px; }.command-main { padding: 0 22px 40px; }.dashboard-hero { min-height: 360px; }.metric-card { padding: 20px 14px; }.metric-card strong { font-size: 28px; }.bottom-strip > div { gap: 10px; }.bottom-strip p { max-width: 390px; }.environment-detail-grid { gap: 7px 8px; } }
+@media (max-width: 680px) { .command-app { display: block; }.command-sidebar { width: 100%; min-height: auto; padding: 16px; border-right: 0; border-bottom: 1px solid var(--command-line); }.sidebar-toggle { display: none; }.brand-lockup { margin-bottom: 15px; }.sidebar-label,.sidebar-bottom { display: none; }.command-nav { grid-template-columns: repeat(4, 1fr); gap: 3px; }.command-nav button { padding: 9px 5px; display: flex; justify-content: center; gap: 4px; font-size: 10px; }.nav-index { display: none; }.command-main { padding: 0 16px 35px; }.command-topbar { min-height: 82px; }.top-status { font-size: 8px; }.top-status .top-divider,.top-status { gap: 5px; }.dashboard-hero { min-height: 570px; display: block; padding-top: 65px; }.hero-copy h2 { font-size: 48px; }.brand-logo { width: 44px; height: 44px; flex-basis: 44px; }.hero-logo { inset: 28%; width: 44%; height: 44%; }.hero-foot { bottom: 20px; gap: 12px; font-size: 7px; }.metric-grid { grid-template-columns: 1fr 1fr; }.metric-card:nth-child(2) { border-right: 0; }.metric-card:nth-child(-n+2) { border-bottom: 1px solid var(--command-line); }.dashboard-columns { display: block; }.panel { min-height: auto; }.bottom-strip { display: block; }.bottom-strip > div { align-items: flex-start; }.bottom-strip p { line-height: 1.6; }.bottom-strip button { margin: 20px 0 0 48px; }.placeholder-view h2 { font-size: 42px; }.environment-detail-grid { grid-template-columns: 1fr; }.signal-grid { grid-template-columns: 1fr; } }
+  .command-sidebar {
+    position: relative;
+    background: linear-gradient(180deg, var(--command-side) 0%, color-mix(in srgb, var(--command-side) 86%, var(--command-accent) 14%) 100%);
+    box-shadow: 12px 0 32px rgba(73, 52, 139, .08);
   }
-  .title-text { filter: drop-shadow(0 2px 10px rgba(0, 0, 0, 0.35)); }
-  .title-accent { filter: drop-shadow(0 0 3px rgba(245, 182, 41, 0.5)); animation: accent-shine 2.8s linear infinite, accent-glow 2.8s ease-in-out infinite; }
-}
-@keyframes title-shine {
-  0% { background-position: 120% 0; }
-  55%, 100% { background-position: -80% 0; } /* 扫过去后停一拍,再回来,不晃眼 */
-}
-@keyframes accent-shine { to { background-position: -200% 0; } }
-@keyframes accent-glow {
-  0%, 100% { filter: drop-shadow(0 0 3px rgba(245, 182, 41, 0.45)); }
-  50% { filter: drop-shadow(0 0 10px rgba(255, 217, 122, 0.9)); }
-}
-.hero h1::after {
-  content: ''; position: absolute; left: 50%; transform: translateX(-50%); bottom: 0;
-  width: 72px; height: 3px; border-radius: 999px;
-  background: linear-gradient(90deg, transparent, #ffd97a, #f5b629, transparent);
-  background-size: 200% 100%;
-  animation: underline-slide 2.8s ease-in-out infinite;
-}
-@keyframes underline-slide { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
-/* 双⚡:左右各自摆动 + 摆到顶点"来电"一亮 */
-.logo { font-size: 30px; }
-.zap { display: inline-block; transform-origin: top center; animation: zap-swing 2.8s ease-in-out infinite; }
-.zap-r { animation-delay: 1.4s; }
-@keyframes zap-swing {
-  0%, 100% { transform: rotate(0deg); filter: drop-shadow(0 0 2px rgba(255, 217, 122, 0.3)); }
-  12% { transform: rotate(-12deg); filter: drop-shadow(0 0 8px rgba(255, 217, 122, 0.95)); }
-  24% { transform: rotate(8deg); }
-  36% { transform: rotate(-4deg); filter: drop-shadow(0 0 3px rgba(255, 217, 122, 0.4)); }
-  48%, 100% { transform: rotate(0deg); filter: drop-shadow(0 0 2px rgba(255, 217, 122, 0.3)); }
-}
-/* 减少动态:标题流光/下划线/双⚡全部静止,渐变停在最好看的一帧 */
-@media (prefers-reduced-motion: reduce) {
-  .title-text, .title-accent, .hero h1::after, .zap { animation: none; }
-  .title-text { background-position: 34% 0; }   /* 定格:金色高光正好压在字面上 */
-  .title-accent { background-position: 30% 0; filter: drop-shadow(0 0 3px rgba(245, 182, 41, 0.5)); }
-  .zap { transform: none; filter: drop-shadow(0 0 2px rgba(255, 217, 122, 0.3)); }
-}
-
-/* 励志标语轮播:hero 底部独占一整行,5s 换一条,淡入淡出;小圆点可手动切换 */
-.ticker {
-  grid-column: 1 / -1; width: 100%;
-  display: flex; align-items: center; justify-content: center; gap: 8px;
-  position: relative;
-  min-height: 46px; padding: 10px 120px 10px 16px;
-  border-radius: 12px;
-  background: linear-gradient(90deg, rgba(255,255,255,0.06), rgba(255,255,255,0.16) 50%, rgba(255,255,255,0.06));
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14);
-  font-size: 17px; line-height: 1.4; letter-spacing: 0.6px;
-  color: #fff; text-align: center;
-}
-/* 左侧金色竖条,强化"标语位"的存在感 */
-.ticker::before {
-  content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: linear-gradient(180deg, #ffd97a, #f5b629);
-}
-.ticker-q { font-size: 24px; opacity: 0.5; font-family: Georgia, serif; line-height: 1; }
-.ticker-line {
-  font-weight: 700; letter-spacing: 0.6px;
-  text-shadow: 0 1px 6px rgba(0,0,0,0.28);
-}
-.ticker-dots { display: inline-flex; gap: 5px; position: absolute; right: 18px; top: 50%; transform: translateY(-50%); }
-.ticker-dots i {
-  width: 6px; height: 6px; border-radius: 50%; cursor: pointer;
-  background: rgba(255,255,255,0.35); transition: all 0.25s;
-}
-.ticker-dots i:hover { background: rgba(255,255,255,0.8); }
-.ticker-dots i.on { background: #fff; width: 16px; border-radius: 999px; }
-.ticker-fade-enter-active, .ticker-fade-leave-active { transition: opacity 0.35s ease, transform 0.35s ease; }
-.ticker-fade-enter-from { opacity: 0; transform: translateY(6px); }
-.ticker-fade-leave-to { opacity: 0; transform: translateY(-6px); }
-.stamp {
-  position: absolute; top: 0; right: 40px;
-  font-size: 12px; opacity: 0.8; background: rgba(255,255,255,0.12); padding: 5px 12px; border-radius: 999px;
-}
-/* 抓取中:前面亮一个呼吸绿点,状态一眼可见 */
-.stamp.busy { opacity: 1; }
-.stamp.busy::before {
-  content: ''; display: inline-block; vertical-align: 1px;
-  width: 7px; height: 7px; border-radius: 50%; margin-right: 6px;
-  background: #7dffa8; box-shadow: 0 0 0 0 rgba(125, 255, 168, 0.7);
-  animation: stamp-pulse 1.2s ease-out infinite;
-}
-@keyframes stamp-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(125, 255, 168, 0.7); }
-  100% { box-shadow: 0 0 0 7px rgba(125, 255, 168, 0); }
-}
-
-main { margin-top: -14px; position: relative; z-index: 2; }
-
-.tabs { display: inline-flex; gap: 4px; background: var(--badge-bg); padding: 4px; border-radius: 12px; box-shadow: var(--shadow); margin-bottom: 14px; }
-.tab {
-  border: none; cursor: pointer; background: transparent;
-  padding: 8px 22px; border-radius: 9px; font-size: 14px; font-weight: 600;
-  color: var(--muted); font-family: inherit; transition: all 0.15s;
-}
-.tab small { font-weight: 400; margin-left: 6px; opacity: 0.7; font-size: 12px; }
-.tab:hover { color: var(--accent); }
-.tab.on { background: var(--accent); color: #fff; box-shadow: 0 2px 8px rgba(59,108,255,0.35); }
-
-.summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 14px; }
-.sum-card {
-  background: var(--card); border-radius: 14px; padding: 16px 20px;
-  box-shadow: var(--shadow); text-align: center;
-  transition: transform 0.18s ease, box-shadow 0.18s ease;
-}
-.sum-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-hover); background: var(--card-hover); }
-.sum-num { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.sum-label { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
-.sum-card.accent .sum-num { color: var(--green); }
-
-/* 今日之星:podium 卡区(紧凑版),金色渐变底,冠军居中放大 */
-.stars {
-  position: relative; overflow: hidden;
-  background: var(--stars-bg);
-  border: 1.5px solid var(--stars-border);
-  border-radius: 16px; padding: 11px 16px 12px;
-  box-shadow: var(--stars-shadow);
-  margin-bottom: 12px;
-}
-.stars::before { /* 顶部一道流动金线,强调“领奖台”氛围 */
-  content: ''; position: absolute; inset: 0 0 auto; height: 3px;
-  background: linear-gradient(90deg, transparent, #f5b629 30%, #ffd97a 50%, #f5b629 70%, transparent);
-}
-.stars-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
-.stars-title { font-size: 15px; font-weight: 800; color: var(--stars-text); letter-spacing: 1px; }
-.stars-sub { font-size: 12px; color: var(--muted); }
-.stars-sub b { color: var(--green); font-variant-numeric: tabular-nums; }
-
-.podium { display: grid; grid-template-columns: 1fr 1.25fr 1fr; gap: 12px; align-items: stretch; }
-.pod {
-  display: flex; flex-direction: column; align-items: center; gap: 1px;
-  border-radius: 12px; padding: 8px 10px 7px; text-decoration: none !important;
-  color: var(--text); border: 1px solid var(--line); background: var(--card);
-  box-shadow: 0 2px 10px rgba(28, 42, 90, 0.06);
-  transition: transform 0.18s ease, box-shadow 0.18s ease;
-  position: relative;
-  animation: pod-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) backwards; /* 进场:依次上浮落位 */
-}
-/* 三张卡按槽位错开入场(先冠军、再左右),比齐刷刷出现更有仪式感 */
-.pod.slot1 { animation-delay: 0.05s; }
-.pod.slot2 { animation-delay: 0.16s; }
-.pod.slot3 { animation-delay: 0.27s; }
-@keyframes pod-in {
-  from { opacity: 0; transform: translateY(16px) scale(0.96); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-.pod:hover { transform: translateY(-3px) scale(1.02); box-shadow: var(--shadow-hover); background: var(--card-hover); }
-.pod-medal { font-size: 20px; line-height: 1.1; filter: drop-shadow(0 2px 3px rgba(160,106,0,0.25)); transform-origin: top center; animation: medal-swing 3.2s ease-in-out infinite; }
-@keyframes medal-swing {
-  0%, 100% { transform: rotate(0deg); }
-  12% { transform: rotate(-10deg); }
-  24% { transform: rotate(7deg); }
-  36% { transform: rotate(-4deg); }
-  48% { transform: rotate(0deg); }
-}
-.pod-name { font-size: 14px; font-weight: 700; margin-top: 2px; display: inline-flex; align-items: center; gap: 6px; }
-.pod-num { font-size: 24px; font-weight: 800; line-height: 1.15; font-variant-numeric: tabular-nums; color: var(--green); }
-.pod-num small { font-size: 11px; font-weight: 600; color: var(--muted); margin-left: 2px; }
-.pod-bar { width: 78%; height: 4px; border-radius: 999px; background: var(--badge-bg); overflow: hidden; margin-top: 3px; }
-.pod-bar i {
-  display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #ffd97a, #f5b629);
-  transform-origin: left center; animation: bar-grow 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.45s backwards; /* 卡片落位后,占比条从 0 生长 */
-}
-@keyframes bar-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-.pod-share { font-size: 10.5px; color: var(--stars-text); margin-top: 2px; font-variant-numeric: tabular-nums; }
-/* CF 总过题:收进姓名行的小尾标,悬停卡面 title 看完整说明,省掉整行高度 */
-.pod-total {
-  font-size: 10.5px; font-weight: 600; color: var(--accent);
-  background: var(--accent-soft); border-radius: 999px; padding: 0 7px; line-height: 1.6;
-  font-variant-numeric: tabular-nums;
-}
-
-/* 冠军居中:更大、金色描边、轻微呼吸光晕(按槽位算,并列名次也不会错位) */
-.pod.slot1 {
-  order: 2; border-color: #eec06a;
-  background: linear-gradient(180deg, var(--accent-soft), var(--card) 70%);
-  box-shadow: 0 4px 18px rgba(214, 158, 46, 0.22);
-  animation: pod-glow 2.6s ease-in-out infinite;
-}
-.pod.slot1 .pod-medal { font-size: 27px; }
-.pod.slot1 .pod-name { font-size: 15px; }
-.pod.slot1 .pod-num { font-size: 32px; }
-@keyframes pod-glow {
-  0%, 100% { box-shadow: 0 4px 18px rgba(214, 158, 46, 0.22); }
-  50% { box-shadow: 0 4px 26px rgba(214, 158, 46, 0.40); }
-}
-.pod.slot2 { order: 1; }
-.pod.slot3 { order: 3; }
-.pod.slot2 .pod-medal, .pod.slot3 .pod-medal { opacity: 0.92; }
-/* 今天只有 1 人刷题:单卡居中,不歪在左边 */
-.podium > .pod:only-child { grid-column: 1 / -1; max-width: 340px; margin: 0 auto; width: 100%; }
-
-@media (prefers-reduced-motion: reduce) {
-  .pod.slot1 { animation: none; }
-  .pod { transition: none; animation: none; }
-  .pod-medal { animation: none; }
-  .pod-bar i { animation: none; }
-  .stamp.busy::before { animation: none; }
-}
-
-/* 还没人刷题:虚位以待 */
-.empty-stars { display: flex; align-items: center; gap: 14px; padding: 18px; }
-.empty-crown { font-size: 30px; filter: grayscale(0.3); opacity: 0.8; }
-.empty-text { display: flex; flex-direction: column; gap: 2px; }
-.empty-text b { font-size: 15px; color: var(--stars-text); letter-spacing: 0.5px; }
-.empty-text small { font-size: 12.5px; color: var(--muted); }
-
-/* 近期比赛 */
-.contests {
-  background: var(--card); border-radius: 14px; padding: 14px 18px;
-  box-shadow: var(--shadow); margin-bottom: 14px;
-}
-.ctests-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
-.ctests-title { font-size: 15px; font-weight: 800; color: var(--accent); letter-spacing: 0.5px; }
-.ctests-sub { font-size: 12.5px; color: var(--muted); }
-.ctests-sub b { color: var(--green); }
-.ctests-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.ctest {
-  display: grid; grid-template-columns: 76px 1fr auto; align-items: center; gap: 12px;
-  border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px;
-  background: var(--ctest-bg);
-}
-.ctest-phase { font-size: 11.5px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 3px 0; text-align: center; }
-.ctest-phase.live { color: #fff; background: var(--green); animation: ctest-pulse 1.6s ease-in-out infinite; }
-.ctest-phase.done { color: var(--muted); background: var(--badge-bg); }
-@keyframes ctest-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
-.ctest-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.ctest-name {
-  font-size: 14px; font-weight: 700; color: var(--text); text-decoration: none;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.ctest-name:hover { color: var(--accent); text-decoration: underline; }
-.ctest-ext { font-size: 11px; color: var(--muted); }
-.ctest-time { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-/* 实时倒计时:每秒跳动。tabular-nums 等宽数字,秒位翻动不抖行 */
-.ctest-cd {
-  display: inline-flex; align-items: center; gap: 6px; margin-top: 4px;
-  font-size: 12px; color: var(--muted);
-}
-.ctest-cd .cd-label {
-  font-weight: 600; color: var(--accent);
-  background: var(--accent-soft); border-radius: 999px; padding: 1px 8px;
-}
-.ctest-cd b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.3px; }
-/* 24 小时内开场:整条转橙色警示,数字微微呼吸 */
-.ctest-cd.soon .cd-label { color: #b45309; background: #fff3e0; }
-.ctest-cd.soon b { color: #d97706; animation: cd-breathe 1.6s ease-in-out infinite; }
-/* 正在打:红色「距结束」,和进行中徽章同色系 */
-.ctest-cd.cd-live .cd-label { color: #fff; background: #d92d20; }
-.ctest-cd.cd-live b { color: #d92d20; }
-.cd-note { font-size: 11px; color: #d92d20; font-weight: 600; }
-@keyframes cd-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-@media (prefers-reduced-motion: reduce) { .ctest-cd.soon b { animation: none; } }
-.ctest-rated { font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
-.ctest-rated.yes { color: var(--green); background: var(--green-soft); }
-.ctest-rated.maybe { color: #8a5800; background: #fff6e0; }
-.ctest-rated.no { color: var(--muted); background: var(--badge-bg); }
-.ctest-more { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
-.ctest-more a { color: var(--accent); text-decoration: none; }
-.ctest-more a:hover { text-decoration: underline; }
-@media (prefers-reduced-motion: reduce) { .ctest-phase.live { animation: none; } }
-
-/* 抓取提示条 */
-.notice {
-  background: var(--notice-bg); border: 1px solid var(--notice-border); border-radius: 12px;
-  padding: 10px 16px; margin-bottom: 14px; font-size: 13px; color: var(--notice-text);
-  box-shadow: var(--shadow);
-}
-.notice-line + .notice-line { margin-top: 4px; }
-
-/* 数据口径说明 */
-.rules {
-  background: var(--card); border-radius: 14px; padding: 0 16px;
-  box-shadow: var(--shadow); margin-bottom: 14px; font-size: 13px;
-}
-.rules summary {
-  cursor: pointer; padding: 12px 0; font-weight: 600; color: var(--accent);
-  list-style: none; user-select: none;
-}
-.rules summary::-webkit-details-marker { display: none; }
-.rules summary::after { content: ' ▾'; font-size: 11px; color: var(--muted); }
-.rules[open] summary::after { content: ' ▴'; }
-.rules-body { padding: 4px 0 16px; border-top: 1px dashed var(--line); }
-.rule-notes { margin: 0; padding-left: 18px; color: var(--muted); line-height: 1.9; }
-.rule-notes code { background: var(--badge-bg); padding: 1px 6px; border-radius: 4px; color: var(--text); }
-
-.toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
-.search {
-  flex: 1; min-width: 220px; padding: 10px 16px;
-  border: 1px solid var(--input-border); border-radius: 10px; background: var(--card); color: var(--text); outline: none;
-  box-shadow: var(--shadow);
-}
-.search:focus { border-color: var(--accent); }
-.filter {
-  padding: 10px 12px; border: 1px solid var(--input-border); border-radius: 10px;
-  background: var(--card); color: var(--text); outline: none; box-shadow: var(--shadow);
-}
-.count { color: var(--muted); font-size: 13px; }
-
-.hint { padding: 40px; text-align: center; color: var(--muted); background: var(--card); border-radius: 14px; box-shadow: var(--shadow); }
-.hint.error { color: #d02020; }
-
-/* 积分口径说明:原来是裸 h4,收进卡片样式,和上方口径说明区呼应 */
-.score-explain {
-  background: var(--card); border-radius: 12px; padding: 11px 16px;
-  box-shadow: var(--shadow); margin-bottom: 14px; font-size: 13px;
-  color: var(--muted); line-height: 1.7;
-}
-.score-explain b { color: var(--text); }
-
-/* 老登榜「排名不分先后」提示条 */
-.no-order-tip {
-  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
-  padding: 10px 16px; margin: 0 0 14px; font-size: 13px; color: var(--muted);
-  box-shadow: var(--shadow); text-align: center;
-}
-.no-order-tip strong { color: var(--accent); }
-
-.foot { margin-top: 22px; color: var(--muted); font-size: 12px; text-align: center; }
-.foot-made {
-  display: inline-block; margin-bottom: 10px; padding: 5px 16px;
-  border-radius: 999px; font-size: 12.5px; font-weight: 600; letter-spacing: 0.5px;
-  color: var(--accent); background: var(--accent-soft);
-  box-shadow: inset 0 0 0 1px rgba(59, 108, 255, 0.18);
-}
-.foot code { background: #e4e9f4; padding: 1px 6px; border-radius: 4px; }
-/* 反馈入口:页脚里最醒目的一行,引导提 issue */
-.foot-feedback {
-  margin-top: 10px; font-size: 12.5px; color: var(--text);
-}
-.foot-feedback a {
-  color: var(--accent); font-weight: 700; text-decoration: none;
-  border-bottom: 1px dashed var(--accent);
-}
-.foot-feedback a:hover { text-decoration: none; border-bottom-style: solid; }
-.foot-repo { margin-top: 8px; display: flex; justify-content: center; align-items: center; gap: 14px; flex-wrap: wrap; }
-.foot-repo a { color: var(--accent); text-decoration: none; }
-.foot-repo a:hover { text-decoration: underline; }
-.foot-copy { color: #a5abc0; letter-spacing: 0.5px; }
-
-@media (max-width: 640px) {
-  .hero-inner { padding: 0 20px; }
-  .hero h1 { font-size: 20px; letter-spacing: 0.5px; gap: 8px; }
-  .logo { font-size: 20px; }
-  .hero h1::after { width: 52px; }
-  /* 窄屏标题占满宽度,时间胶囊改回正常流居中,避免压住标题 */
-  .stamp { position: static; }
-  /* 标语条:窄屏仍占整行,字号收小、圆点移到文字下方 */
-  .ticker { font-size: 14px; letter-spacing: 0.3px; padding: 9px 10px; flex-direction: column; gap: 6px; min-height: 0; }
-  .ticker-q { display: none; }
-  .ticker-dots { position: static; transform: none; }
-  .summary { grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  .sum-card { padding: 12px 8px; }
-  .sum-num { font-size: 20px; }
-  .sum-label { font-size: 11.5px; }
-  .toolbar { gap: 8px; }
-  .search { min-width: 0; flex-basis: 100%; }
-  .count { width: 100%; }
-  .tab { padding: 8px 16px; }
-  /* 今日之星:窄屏保持三列领奖台,在紧凑版基础上再收一档 */
-  .stars { padding: 10px 8px 10px; }
-  .stars-head { margin-bottom: 8px; gap: 8px; }
-  .stars-title { font-size: 13.5px; }
-  .stars-sub { font-size: 11px; }
-  .podium { gap: 8px; }
-  .pod { padding: 7px 4px 6px; }
-  .pod-medal { font-size: 16px; }
-  .pod.slot1 .pod-medal { font-size: 22px; }
-  .pod-name { font-size: 12px; gap: 4px; }
-  .pod.slot1 .pod-name { font-size: 13px; }
-  .pod-total { font-size: 9.5px; padding: 0 5px; }
-  .pod-num { font-size: 19px; }
-  .pod.slot1 .pod-num { font-size: 25px; }
-  .pod-bar { width: 88%; }
-  .empty-stars { padding: 14px; }
-  .empty-crown { font-size: 24px; }
-  /* 近期比赛:窄屏两行排版,徽章与计分标签各就各位 */
-  .contests { padding: 12px; }
-  .ctests-head { margin-bottom: 8px; gap: 6px; }
-  .ctests-title { font-size: 13.5px; }
-  .ctests-sub { font-size: 11px; }
-  .ctest { grid-template-columns: 62px 1fr; gap: 8px; padding: 8px 10px; }
-  .ctest-rated { grid-column: 2; justify-self: start; }
-  .ctest-name { font-size: 13px; }
-  .ctest-time { font-size: 11px; }
-}
+  .command-sidebar::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 1px;
+    height: 100%;
+    background: linear-gradient(180deg, transparent, var(--command-accent), transparent);
+    opacity: .45;
+  }
+  .brand-lockup { position: relative; padding: 14px 12px 18px; margin: -10px -10px 20px; border-bottom: 1px solid var(--command-line); }
+  .brand-logo { width: 58px; height: 58px; flex-basis: 58px; box-shadow: 0 0 0 2px var(--command-side), 0 0 0 3px var(--command-accent), 0 10px 24px rgba(118, 87, 232, .24); }
+  .brand-lockup strong { font-size: 15px; letter-spacing: 2px; }
+  .brand-lockup small { color: var(--command-accent); font-size: 8px; letter-spacing: 1.8px; }
+  .sidebar-toggle { border-radius: 8px; border-color: color-mix(in srgb, var(--command-accent) 35%, var(--command-line)); background: color-mix(in srgb, var(--command-accent-soft) 60%, transparent); }
+  .sidebar-label { padding-left: 10px; margin-bottom: 9px; font-size: 8px; }
+  .command-nav { gap: 4px; padding: 0 2px; }
+  .command-nav button { position: relative; min-height: 48px; border-radius: 9px; grid-template-columns: 28px 26px 1fr; gap: 8px; padding: 10px 11px; color: var(--command-muted); transition: background .2s ease, color .2s ease, transform .2s ease; }
+  .command-nav button::after { content: '↗'; position: absolute; right: 12px; color: transparent; font: 12px monospace; transition: color .2s ease; }
+  .command-nav button:hover { transform: translateX(2px); }
+  .command-nav button.active { color: var(--command-text); background: linear-gradient(90deg, var(--command-accent-soft), transparent); box-shadow: inset 3px 0 var(--command-accent), 0 6px 16px rgba(118, 87, 232, .08); }
+  .command-nav button.active::after { color: var(--command-accent); }
+  .command-nav button.active .nav-index { color: var(--command-accent); }
+  .nav-index { color: color-mix(in srgb, var(--command-muted) 72%, transparent); font-size: 9px; }
+  .nav-icon { display: grid; place-items: center; width: 23px; height: 23px; border: 1px solid var(--command-line); border-radius: 6px; background: var(--command-panel); font-size: 14px; }
+  .command-nav button.active .nav-icon { border-color: var(--command-accent); background: var(--command-accent); color: #fff; }
+  .sidebar-bottom { margin: auto -4px 0; padding: 14px 12px 0; border-top: 1px solid var(--command-line); gap: 12px; }
+  .system-state { padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--command-green) 28%, var(--command-line)); border-radius: 8px; background: color-mix(in srgb, var(--command-green) 7%, transparent); font-size: 8px; }
+  .theme-button { padding: 5px 0; }
+  .sidebar-bottom a { padding-top: 3px; font-size: 8px; }
+  .sidebar-collapsed .brand-lockup { justify-content: center; padding: 14px 0 18px; margin-left: -4px; margin-right: -4px; }
+  .sidebar-collapsed .brand-logo { width: 48px; height: 48px; flex-basis: 48px; }
+  .sidebar-collapsed .sidebar-toggle { margin-top: 4px; }
+  .sidebar-collapsed .command-nav button { grid-template-columns: 1fr; justify-items: center; min-height: 46px; padding: 8px 0; }
+  .sidebar-collapsed .command-nav button::after { display: none; }
+  .sidebar-collapsed .nav-index { display: none; }
+  .sidebar-collapsed .nav-icon { width: 30px; height: 30px; font-size: 16px; }
+  @media (max-width: 680px) {
+    .brand-lockup { margin: -4px 0 14px; padding: 8px 0 12px; }
+    .brand-logo { width: 44px; height: 44px; flex-basis: 44px; }
+    .brand-lockup strong { font-size: 13px; }
+    .command-nav button::after { display: none; }
+    .command-nav button.active { box-shadow: inset 0 -2px var(--command-accent); }
+    .nav-icon { width: 21px; height: 21px; }
+  }
 </style>

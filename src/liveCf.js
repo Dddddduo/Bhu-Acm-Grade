@@ -140,10 +140,8 @@ export async function fetchCfLive(members, onEach) {
 // 未开始的比赛按名称启发式标「预计计分」(CF API 赛前不给 rated 字段)。
 // 最多展示 RECENT_MAX 场,其余只计数提醒;抓失败返回 null(调用方保留旧值)。
 // ============================================================
-const RECENT_MAX = 3
-export const RECENT_CONTEST_MAX = RECENT_MAX
-const FINISHED_WINDOW = 7 * 86400 // 已结束比赛只展示近 7 天的
-export const CONTEST_CACHE_KEY = 'bhu-acm-contest-cache-v1'
+const FINISHED_WINDOW = 180 * 86400 // 历史赛事保留半年
+export const CONTEST_CACHE_KEY = 'bhu-acm-contest-cache-v2'
 
 function safeGet(key) {
   try {
@@ -179,7 +177,7 @@ export async function fetchCfContests() {
     const d = await getJson(`${API}/contest.list?gym=false`)
     if (d.status !== 'OK') throw new Error(d.comment || 'contest.list FAILED')
     const now = Math.floor(Date.now() / 1000)
-    const all = d.result.filter((c) => Number.isFinite(c.startTimeSeconds) && isDivRound(c.name))
+    const all = d.result.filter((c) => Number.isFinite(c.startTimeSeconds))
     const upcoming = all
       .filter((c) => ['BEFORE', 'CODING', 'SYSTEM_TEST', 'PENDING_SYSTEM_TEST'].includes(c.phase))
       .sort((a, b) => a.startTimeSeconds - b.startTimeSeconds)
@@ -187,12 +185,11 @@ export async function fetchCfContests() {
       .filter((c) => c.phase === 'FINISHED' && c.startTimeSeconds > now - FINISHED_WINDOW)
       .sort((a, b) => b.startTimeSeconds - a.startTimeSeconds)
 
-    const show = [...upcoming, ...past].slice(0, RECENT_MAX)
-    const rest = upcoming.length + past.length - show.length
-    const ratingMap = await ensureRatingConfirmed(show)
+    const show = [...upcoming, ...past]
+    const ratingMap = {}
     return {
       contests: show.map((c) => ({ ...c, ratingConfirmed: !!ratingMap[String(c.id)] })),
-      rest,
+      rest: 0,
       fetchedAt: Date.now(),
     }
   } catch (e) {
@@ -203,6 +200,28 @@ export async function fetchCfContests() {
 
 // 已结束展示比赛的「确认计分」表:先读永久缓存,缺的用 contest.ratingChanges 补
 // (每轮最多 RECENT_MAX 个新请求,补到就缓存,后续轮次不再请求;单个失败当不计分,下轮重试)
+export async function fetchContestStandings(contestId) {
+  const cacheKey = `${CONTEST_CACHE_KEY}-standings-v3-${contestId}`
+  try {
+    const cached = JSON.parse(safeGet(cacheKey))
+    if (cached?.data && Array.isArray(cached.data.rows) && Array.isArray(cached.data.ratingChanges)) return { ...cached.data, cached: true }
+  } catch {
+    // Invalid cache is ignored and replaced after a successful request.
+  }
+  const d = await getJson(`${API}/contest.standings?contestId=${encodeURIComponent(contestId)}`)
+  if (d.status !== 'OK') throw new Error(d.comment || 'contest.standings FAILED')
+  let ratingChanges = []
+  try {
+    const rating = await getJson(`${API}/contest.ratingChanges?contestId=${encodeURIComponent(contestId)}`)
+    if (rating.status === 'OK') ratingChanges = rating.result
+  } catch (e) {
+    console.warn(`[live cf] contest.ratingChanges ${contestId} 失败:`, e)
+  }
+  const data = { contest: d.result.contest, problems: d.result.problems, rows: d.result.rows, ratingChanges }
+  safeSet(cacheKey, JSON.stringify({ at: Date.now(), data }))
+  return { ...data, cached: false }
+}
+
 async function ensureRatingConfirmed(contests) {
   let map = {}
   try {
