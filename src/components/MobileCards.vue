@@ -99,19 +99,19 @@ function levelOf(row) {
   min-width: 26px; height: 26px; border-radius: 8px; flex: none;
   display: inline-flex; align-items: center; justify-content: center; padding: 0 6px;
   font-size: 13px; font-weight: 600; color: var(--muted);
-  background: #f2f4fa; font-variant-numeric: tabular-nums;
+  background: var(--badge-bg); font-variant-numeric: tabular-nums;
 }
 .lvl.gold { background: #fff7e0; color: #a06a00; }
-.lvl.silver { background: #f0f2f6; color: #6b7280; }
+.lvl.silver { background: var(--badge-bg); color: #6b7280; }
 .lvl.bronze { background: #f8eee4; color: #9a5b2d; }
 .lvl.unranked { font-size: 11px; color: #a5abc0; }
 .card-head .name { display: flex; flex-direction: column; line-height: 1.2; flex: 1; }
 .card-head .name b { font-size: 15px; }
 .card-head .name small { font-size: 11.5px; color: var(--muted); }
-.card-head .score { font-size: 11.5px; color: var(--muted); background: #f2f4fa; border-radius: 8px; padding: 3px 8px; font-variant-numeric: tabular-nums; }
+.card-head .score { font-size: 11.5px; color: var(--muted); background: var(--badge-bg); border-radius: 8px; padding: 3px 8px; font-variant-numeric: tabular-nums; }
 
 .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-.cell { background: #f7f9fd; border-radius: 10px; padding: 7px 10px; }
+.cell { background: var(--ctest-bg); border-radius: 10px; padding: 7px 10px; }
 .cell.hotcell { background: var(--green-soft); }
 .cell-label { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
 .cell-value { font-size: 14px; font-variant-numeric: tabular-nums; }
@@ -129,7 +129,7 @@ function levelOf(row) {
   color: #fff; background: linear-gradient(135deg, #16a34a, #22c55e);
   box-shadow: 0 2px 8px rgba(34, 197, 94, 0.4);
 }
-.obadge.off { color: var(--muted); background: #e8ecf5; }
+.obadge.off { color: var(--muted); background: var(--badge-bg); }
 .obadge.unk { color: #b8bdd0; font-weight: 400; }
 .ob-pulse {
   width: 6px; height: 6px; border-radius: 50%; flex: none;

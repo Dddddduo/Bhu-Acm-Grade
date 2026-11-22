@@ -46,18 +46,18 @@ const initial = computed(() => (props.member.name || '?').trim().slice(0, 1))
 .avatar {
   width: 28px; height: 28px; border-radius: 50%; flex: none;
   object-fit: cover; display: inline-block;
-  border: 1px solid var(--line); background: #eef1f8;
+  border: 1px solid var(--line); background: var(--bg);
 }
 .avatar-fallback {
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 13px; font-weight: 700; color: #8b93ab;
+  font-size: 13px; font-weight: 700; color: var(--muted);
 }
 /* 右下角在线灯:定位相对头像容器,尺寸随容器字号变化不影响(固定 10px 足够醒目) */
 .online-dot { position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px; }
 .online-core {
   position: absolute; inset: 0; border-radius: 50%;
   background: #22c55e;
-  box-shadow: 0 0 0 2px #fff, 0 0 6px 1px rgba(34, 197, 94, 0.9);
+  box-shadow: 0 0 0 2px var(--card), 0 0 6px 1px rgba(34, 197, 94, 0.9);
 }
 .online-ping {
   position: absolute; inset: 0; border-radius: 50%;

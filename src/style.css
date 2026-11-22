@@ -1,17 +1,24 @@
 :root {
-  --bg: #eef1f8;
+  --bg: #f3f6fc;
+  --bg-gradient-start: rgba(59, 108, 255, 0.08);
+  --bg-gradient-end: #e8ecf6;
   --card: #ffffff;
+  --card-hover: #ffffff;
   --text: #1c2233;
-  --muted: #8189a0;
-  --line: #e7eaf3;
+  --muted: #64748b;
+  --line: #e2e8f0;
   --accent: #3b6cff;
   --accent-soft: #eef3ff;
-  --green: #12a150;
-  --green-soft: #e6f7ee;
-  --shadow: 0 2px 12px rgba(28, 42, 90, 0.08);
+  --green: #10b981;
+  --green-soft: #ecfdf5;
+  --shadow: 0 4px 12px rgba(28, 42, 90, 0.05);
+  --shadow-hover: 0 8px 24px rgba(28, 42, 90, 0.1);
+  --stripe: #fafbff;
+  --badge-bg: #f1f5f9;
+  --ctest-bg: #f8fafc;
+  --input-border: #e2e8f0;
 
-  /* Codeforces 官方段位配色:<1200灰 1200绿(Pupil) 1400青(Spec) 1600蓝(Expert)
-     1900紫(CM) 2100橙(Master/IM) 2400红(GM/IGM) ≥3000黑红(LGM) */
+  /* Codeforces 官方段位配色 */
   --cf-newbie: #8c8c8c;
   --cf-pupil: #00a000;
   --cf-specialist: #00a8c0;
@@ -22,8 +29,7 @@
   --cf-gm: #d02020;
   --cf-lgm: #a00b0b;
 
-  /* 牛客官方 Rating 配色:0~699灰 700~1099紫 1100~1499蓝 1500~1999青
-     2000~2399黄 2400~2799橙 ≥2800红(和 CF 不是一套,别混用) */
+  /* 牛客官方 Rating 配色 */
   --nc-gray: #8c8c8c;
   --nc-purple: #8250df;
   --nc-blue: #2f6bff;
@@ -31,6 +37,74 @@
   --nc-yellow: #c08c00;
   --nc-orange: #e07b00;
   --nc-red: #d02020;
+
+  /* Stars card */
+  --stars-bg: radial-gradient(520px 150px at 50% -40px, rgba(255, 199, 64, 0.28), transparent 70%), linear-gradient(135deg, #fffdf4 0%, var(--card) 55%);
+  --stars-border: #f0d89a;
+  --stars-text: #8a5800;
+  --stars-shadow: 0 6px 22px rgba(160, 106, 0, 0.10);
+
+  /* Notice bar */
+  --notice-bg: #fff4f0;
+  --notice-border: #f3c9b5;
+  --notice-text: #9a3b12;
+
+  --scrollbar-thumb: #c3cde2;
+  --scrollbar-thumb-hover: #a9b6d4;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0a0e17;
+  --bg-gradient-start: rgba(99, 102, 241, 0.08);
+  --bg-gradient-end: #0a0e17;
+  --card: #131926;
+  --card-hover: #1b2336;
+  --text: #f3f4f6;
+  --muted: #9ca3af;
+  --line: #222d44;
+  --accent: #4f46e5;
+  --accent-soft: rgba(79, 70, 229, 0.15);
+  --green: #10b981;
+  --green-soft: rgba(16, 185, 129, 0.12);
+  --shadow: 0 4px 15px rgba(0, 0, 0, 0.35);
+  --shadow-hover: 0 10px 25px rgba(0, 0, 0, 0.5);
+  --stripe: #182032;
+  --badge-bg: #1e293b;
+  --ctest-bg: #0f1522;
+  --input-border: #222d44;
+
+  /* Brightened colors for dark mode to ensure perfect AAA contrast */
+  --cf-newbie: #9ca3af;
+  --cf-pupil: #22c55e;
+  --cf-specialist: #22d3ee;
+  --cf-expert: #3b82f6;
+  --cf-cm: #c084fc;
+  --cf-master: #fbbf24;
+  --cf-im: #fbbf24;
+  --cf-gm: #f87171;
+  --cf-lgm: #ef4444;
+
+  --nc-gray: #9ca3af;
+  --nc-purple: #c084fc;
+  --nc-blue: #3b82f6;
+  --nc-cyan: #22d3ee;
+  --nc-yellow: #fbbf24;
+  --nc-orange: #fb923c;
+  --nc-red: #f87171;
+
+  /* Stars card */
+  --stars-bg: radial-gradient(520px 150px at 50% -40px, rgba(217, 119, 6, 0.15), transparent 70%), linear-gradient(135deg, #1e1503 0%, var(--card) 55%);
+  --stars-border: #78350f;
+  --stars-text: #fbbf24;
+  --stars-shadow: 0 6px 22px rgba(0, 0, 0, 0.55);
+
+  /* Notice bar */
+  --notice-bg: #1e1411;
+  --notice-border: #451a03;
+  --notice-text: #f97316;
+
+  --scrollbar-thumb: #2d3748;
+  --scrollbar-thumb-hover: #4a5568;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -38,27 +112,28 @@
 body {
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
   background:
-    radial-gradient(1100px 420px at 85% -80px, rgba(59, 108, 255, 0.10), transparent 60%),
-    linear-gradient(180deg, #f0f4fc 0%, #e8ecf6 100%);
+    radial-gradient(1100px 420px at 85% -80px, var(--bg-gradient-start), transparent 60%),
+    var(--bg);
   background-attachment: fixed;
   color: var(--text);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
+  transition: background 0.3s ease, color 0.3s ease;
 }
 
-a { color: var(--accent); text-decoration: none; }
+a { color: var(--accent); text-decoration: none; transition: color 0.2s ease; }
 a:hover { text-decoration: underline; }
 
-button { font: inherit; cursor: pointer; }
-input, select { font: inherit; }
+button { font: inherit; cursor: pointer; transition: all 0.2s ease; }
+input, select { font: inherit; transition: all 0.2s ease; }
 
 ::selection { background: rgba(59, 108, 255, 0.16); }
 
-/* 细滚动条,和卡片圆角配套 */
+/* 细滚动条 */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: #c3cde2; border-radius: 8px;
+  background: var(--scrollbar-thumb); border-radius: 8px;
   border: 2px solid transparent; background-clip: content-box;
 }
-::-webkit-scrollbar-thumb:hover { background: #a9b6d4; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); background-clip: content-box; }

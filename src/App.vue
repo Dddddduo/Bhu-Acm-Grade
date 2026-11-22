@@ -13,6 +13,7 @@ import RankTable from './components/RankTable.vue'
 import MobileCards from './components/MobileCards.vue'
 import CountUp from './components/CountUp.vue'
 import OnlineBar from './components/OnlineBar.vue'
+import StudioAnalytics from './components/StudioAnalytics.vue'
 import { COLUMNS } from './columns.js'
 import { fetchCfLive, fetchCfContests, ratedGuess, CONTEST_CACHE_KEY, RECENT_CONTEST_MAX } from './liveCf.js'
 import { fetchNcLive } from './liveNc.js'
@@ -435,8 +436,27 @@ const TICKER_LINES = [
 ]
 const tickIdx = ref(Math.floor(Math.random() * TICKER_LINES.length))
 let tickTimer = null
+const isDark = ref(false)
+
+function toggleTheme() {
+  isDark.value = !isDark.value
+  if (isDark.value) {
+    document.documentElement.setAttribute('data-theme', 'dark')
+    localStorage.setItem('theme', 'dark')
+  } else {
+    document.documentElement.removeAttribute('data-theme')
+    localStorage.setItem('theme', 'light')
+  }
+}
+
 onMounted(() => {
   tickTimer = setInterval(() => { tickIdx.value = (tickIdx.value + 1) % TICKER_LINES.length }, TICKER_MS)
+  const savedTheme = localStorage.getItem('theme')
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+  if (savedTheme === 'dark' || (!savedTheme && prefersDark)) {
+    isDark.value = true
+    document.documentElement.setAttribute('data-theme', 'dark')
+  }
 })
 onUnmounted(() => clearInterval(tickTimer))
 </script>
@@ -445,6 +465,10 @@ onUnmounted(() => clearInterval(tickTimer))
   <div class="page">
     <header class="hero">
       <div class="hero-inner">
+        <button class="theme-toggle" @click="toggleTheme" :title="isDark ? '切换到亮色模式' : '切换到暗色模式'">
+          <span v-if="isDark">☀️</span>
+          <span v-else>🌙</span>
+        </button>
         <h1>
           <span class="logo zap zap-l">⚡</span>
           <span class="title-text">北华大学程序设计工作室<b class="title-accent">BHU-ACM</b>榜单系统</span>
@@ -529,6 +553,9 @@ onUnmounted(() => clearInterval(tickTimer))
       <!-- 当前在线:紧跟今日之星下方,谁此刻在 Codeforces 一眼可见(判定口径见 online.js)
            全员合并展示:不分新生/老登,切分组不影响这里的人 -->
       <OnlineBar :rows="onlineMembers" :recent="recentOfflineMembers" />
+
+      <!-- 数据可视化看板：实时团队战力多维图表分析 -->
+      <StudioAnalytics v-if="!loading && joined.length" :joinedRows="joined" :groupName="group" />
 
       <!-- 近期比赛:CF 正式轮(Div.1~4 / 1+2),不含 gym;最多 3 场,其余只提醒数量 -->
       <section v-if="contests.length" class="contests">
@@ -656,6 +683,28 @@ onUnmounted(() => clearInterval(tickTimer))
 </template>
 
 <style scoped>
+.theme-toggle {
+  position: absolute;
+  top: -6px;
+  left: 40px;
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.2s;
+  z-index: 10;
+}
+.theme-toggle:hover {
+  background: rgba(255, 255, 255, 0.25);
+  transform: scale(1.1);
+}
+
 .page { max-width: 1440px; margin: 0 auto; padding: 0 20px 40px; }
 
 .hero {
@@ -783,7 +832,7 @@ onUnmounted(() => clearInterval(tickTimer))
 
 main { margin-top: -14px; position: relative; z-index: 2; }
 
-.tabs { display: inline-flex; gap: 4px; background: rgba(255,255,255,0.6); padding: 4px; border-radius: 12px; box-shadow: var(--shadow); margin-bottom: 14px; }
+.tabs { display: inline-flex; gap: 4px; background: var(--badge-bg); padding: 4px; border-radius: 12px; box-shadow: var(--shadow); margin-bottom: 14px; }
 .tab {
   border: none; cursor: pointer; background: transparent;
   padding: 8px 22px; border-radius: 9px; font-size: 14px; font-weight: 600;
@@ -799,7 +848,7 @@ main { margin-top: -14px; position: relative; z-index: 2; }
   box-shadow: var(--shadow); text-align: center;
   transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
-.sum-card:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(28, 42, 90, 0.12); }
+.sum-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-hover); background: var(--card-hover); }
 .sum-num { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .sum-label { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 .sum-card.accent .sum-num { color: var(--green); }
@@ -807,12 +856,10 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 /* 今日之星:podium 卡区(紧凑版),金色渐变底,冠军居中放大 */
 .stars {
   position: relative; overflow: hidden;
-  background:
-    radial-gradient(520px 150px at 50% -40px, rgba(255, 199, 64, 0.28), transparent 70%),
-    linear-gradient(135deg, #fffdf4 0%, var(--card) 55%);
-  border: 1.5px solid #f0d89a;
+  background: var(--stars-bg);
+  border: 1.5px solid var(--stars-border);
   border-radius: 16px; padding: 11px 16px 12px;
-  box-shadow: 0 6px 22px rgba(160, 106, 0, 0.10);
+  box-shadow: var(--stars-shadow);
   margin-bottom: 12px;
 }
 .stars::before { /* 顶部一道流动金线,强调“领奖台”氛围 */
@@ -820,7 +867,7 @@ main { margin-top: -14px; position: relative; z-index: 2; }
   background: linear-gradient(90deg, transparent, #f5b629 30%, #ffd97a 50%, #f5b629 70%, transparent);
 }
 .stars-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
-.stars-title { font-size: 15px; font-weight: 800; color: #8a5800; letter-spacing: 1px; }
+.stars-title { font-size: 15px; font-weight: 800; color: var(--stars-text); letter-spacing: 1px; }
 .stars-sub { font-size: 12px; color: var(--muted); }
 .stars-sub b { color: var(--green); font-variant-numeric: tabular-nums; }
 
@@ -842,7 +889,7 @@ main { margin-top: -14px; position: relative; z-index: 2; }
   from { opacity: 0; transform: translateY(16px) scale(0.96); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
-.pod:hover { transform: translateY(-3px) scale(1.02); box-shadow: 0 8px 22px rgba(28, 42, 90, 0.14); }
+.pod:hover { transform: translateY(-3px) scale(1.02); box-shadow: var(--shadow-hover); background: var(--card-hover); }
 .pod-medal { font-size: 20px; line-height: 1.1; filter: drop-shadow(0 2px 3px rgba(160,106,0,0.25)); transform-origin: top center; animation: medal-swing 3.2s ease-in-out infinite; }
 @keyframes medal-swing {
   0%, 100% { transform: rotate(0deg); }
@@ -854,13 +901,13 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 .pod-name { font-size: 14px; font-weight: 700; margin-top: 2px; display: inline-flex; align-items: center; gap: 6px; }
 .pod-num { font-size: 24px; font-weight: 800; line-height: 1.15; font-variant-numeric: tabular-nums; color: var(--green); }
 .pod-num small { font-size: 11px; font-weight: 600; color: var(--muted); margin-left: 2px; }
-.pod-bar { width: 78%; height: 4px; border-radius: 999px; background: #eef1f8; overflow: hidden; margin-top: 3px; }
+.pod-bar { width: 78%; height: 4px; border-radius: 999px; background: var(--badge-bg); overflow: hidden; margin-top: 3px; }
 .pod-bar i {
   display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #ffd97a, #f5b629);
   transform-origin: left center; animation: bar-grow 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.45s backwards; /* 卡片落位后,占比条从 0 生长 */
 }
 @keyframes bar-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-.pod-share { font-size: 10.5px; color: #a06a00; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.pod-share { font-size: 10.5px; color: var(--stars-text); margin-top: 2px; font-variant-numeric: tabular-nums; }
 /* CF 总过题:收进姓名行的小尾标,悬停卡面 title 看完整说明,省掉整行高度 */
 .pod-total {
   font-size: 10.5px; font-weight: 600; color: var(--accent);
@@ -871,7 +918,7 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 /* 冠军居中:更大、金色描边、轻微呼吸光晕(按槽位算,并列名次也不会错位) */
 .pod.slot1 {
   order: 2; border-color: #eec06a;
-  background: linear-gradient(180deg, #fffaf0, var(--card) 70%);
+  background: linear-gradient(180deg, var(--accent-soft), var(--card) 70%);
   box-shadow: 0 4px 18px rgba(214, 158, 46, 0.22);
   animation: pod-glow 2.6s ease-in-out infinite;
 }
@@ -900,7 +947,7 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 .empty-stars { display: flex; align-items: center; gap: 14px; padding: 18px; }
 .empty-crown { font-size: 30px; filter: grayscale(0.3); opacity: 0.8; }
 .empty-text { display: flex; flex-direction: column; gap: 2px; }
-.empty-text b { font-size: 15px; color: #8a5800; letter-spacing: 0.5px; }
+.empty-text b { font-size: 15px; color: var(--stars-text); letter-spacing: 0.5px; }
 .empty-text small { font-size: 12.5px; color: var(--muted); }
 
 /* 近期比赛 */
@@ -916,11 +963,11 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 .ctest {
   display: grid; grid-template-columns: 76px 1fr auto; align-items: center; gap: 12px;
   border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px;
-  background: #fbfcff;
+  background: var(--ctest-bg);
 }
 .ctest-phase { font-size: 11.5px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 3px 0; text-align: center; }
 .ctest-phase.live { color: #fff; background: var(--green); animation: ctest-pulse 1.6s ease-in-out infinite; }
-.ctest-phase.done { color: var(--muted); background: #eef1f8; }
+.ctest-phase.done { color: var(--muted); background: var(--badge-bg); }
 @keyframes ctest-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 .ctest-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ctest-name {
@@ -939,7 +986,7 @@ main { margin-top: -14px; position: relative; z-index: 2; }
   font-weight: 600; color: var(--accent);
   background: var(--accent-soft); border-radius: 999px; padding: 1px 8px;
 }
-.ctest-cd b { color: #1c2233; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.3px; }
+.ctest-cd b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.3px; }
 /* 24 小时内开场:整条转橙色警示,数字微微呼吸 */
 .ctest-cd.soon .cd-label { color: #b45309; background: #fff3e0; }
 .ctest-cd.soon b { color: #d97706; animation: cd-breathe 1.6s ease-in-out infinite; }
@@ -952,7 +999,7 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 .ctest-rated { font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
 .ctest-rated.yes { color: var(--green); background: var(--green-soft); }
 .ctest-rated.maybe { color: #8a5800; background: #fff6e0; }
-.ctest-rated.no { color: var(--muted); background: #eef1f8; }
+.ctest-rated.no { color: var(--muted); background: var(--badge-bg); }
 .ctest-more { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
 .ctest-more a { color: var(--accent); text-decoration: none; }
 .ctest-more a:hover { text-decoration: underline; }
@@ -960,8 +1007,8 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 
 /* 抓取提示条 */
 .notice {
-  background: #fff4f0; border: 1px solid #f3c9b5; border-radius: 12px;
-  padding: 10px 16px; margin-bottom: 14px; font-size: 13px; color: #9a3b12;
+  background: var(--notice-bg); border: 1px solid var(--notice-border); border-radius: 12px;
+  padding: 10px 16px; margin-bottom: 14px; font-size: 13px; color: var(--notice-text);
   box-shadow: var(--shadow);
 }
 .notice-line + .notice-line { margin-top: 4px; }
@@ -980,17 +1027,17 @@ main { margin-top: -14px; position: relative; z-index: 2; }
 .rules[open] summary::after { content: ' ▴'; }
 .rules-body { padding: 4px 0 16px; border-top: 1px dashed var(--line); }
 .rule-notes { margin: 0; padding-left: 18px; color: var(--muted); line-height: 1.9; }
-.rule-notes code { background: #eef1f8; padding: 1px 6px; border-radius: 4px; color: #1c2233; }
+.rule-notes code { background: var(--badge-bg); padding: 1px 6px; border-radius: 4px; color: var(--text); }
 
 .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
 .search {
   flex: 1; min-width: 220px; padding: 10px 16px;
-  border: 1px solid var(--line); border-radius: 10px; background: var(--card); outline: none;
+  border: 1px solid var(--input-border); border-radius: 10px; background: var(--card); color: var(--text); outline: none;
   box-shadow: var(--shadow);
 }
 .search:focus { border-color: var(--accent); }
 .filter {
-  padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 12px; border: 1px solid var(--input-border); border-radius: 10px;
   background: var(--card); color: var(--text); outline: none; box-shadow: var(--shadow);
 }
 .count { color: var(--muted); font-size: 13px; }

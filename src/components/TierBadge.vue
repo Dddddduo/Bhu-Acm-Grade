@@ -80,6 +80,6 @@ const rankText = computed(() => {
 <style scoped>
 .tier-badge { display: inline-flex; align-items: baseline; gap: 6px; font-variant-numeric: tabular-nums; }
 .tier-badge b { font-size: 15px; }
-.tier-badge.none { color: #b8bdd0; font-size: 12px; }
+.tier-badge.none { color: var(--muted); font-size: 12px; }
 .tier-name { font-style: normal; font-size: 11px; opacity: 0.85; }
 </style>

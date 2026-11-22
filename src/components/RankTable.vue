@@ -155,8 +155,8 @@ th, td {
 }
 th { font-size: 12px; }
 tbody tr:last-child td { border-bottom: none; }
-tbody tr:nth-child(even) { background: #fafbff; }
-tbody tr { transition: background 0.25s ease; }
+tbody tr:nth-child(even) { background: var(--stripe); }
+tbody tr { transition: background 0.25s ease; background: var(--card); }
 tbody tr:hover { background: var(--accent-soft); }
 /* ★ 悬停行:头像+姓名、数字、奖牌、段位徽章整体放大 —— 幅度给足、带轻微过冲回弹,过渡丝滑醒目
    transform 不挤动布局;吸附列是 sticky,scale 照常生效 */
@@ -164,15 +164,15 @@ tbody tr:hover { background: var(--accent-soft); }
   transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.25s ease, box-shadow 0.3s ease;
 }
 .num { display: inline-block; } /* 内联元素不吃 transform,升 inline-block */
-tbody tr:hover .who { transform: scale(1.22); }             /* 头像和姓名明显放大 */
+tbody tr:hover .who { transform: scale(1.08); }             /* 头像和姓名微放大，避免过大抖动 */
 tbody tr:hover .num,
 tbody tr:hover .pill,
 tbody tr:hover .rank-cell,
-tbody tr:hover .tier-badge { transform: scale(1.32); }      /* 数据列明显放大 */
+tbody tr:hover .tier-badge { transform: scale(1.12); }      /* 数据列微放大，更和谐 */
 tbody tr:hover .num { color: var(--accent); font-weight: 800; }
-tbody tr:hover .avatar { box-shadow: 0 0 0 2px #fff, 0 0 0 5px var(--accent), 0 4px 14px rgba(59,108,255,0.35); } /* 头像高亮环 + 投影 */
+tbody tr:hover .avatar { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--accent), 0 4px 14px rgba(79, 70, 229, 0.25); } /* 头像高亮环 + 投影 */
 tbody tr:hover .who-text b { color: var(--accent); }        /* 姓名变主色 */
-tbody tr:hover .pill.active { box-shadow: 0 3px 10px rgba(18,161,80,0.3); }
+tbody tr:hover .pill.active { box-shadow: 0 3px 10px rgba(16, 185, 129, 0.2); }
 
 thead th {
   position: sticky; top: 0; z-index: 3;
@@ -188,7 +188,7 @@ thead .sticky-col { z-index: 4; }
 .col-name.sticky-col { left: 92px; box-shadow: 6px 0 8px -6px rgba(28,42,90,0.18); }
 /* 老登榜无评级列:成员列就是第一列,吸附位置归零 */
 .col-name.sticky-col.no-rank { left: 0; }
-tbody tr:nth-child(even) .sticky-col { background: #fafbff; }
+tbody tr:nth-child(even) .sticky-col { background: var(--stripe); }
 tbody tr:hover .sticky-col { background: var(--accent-soft); }
 
 .col-metric { cursor: pointer; user-select: none; }
@@ -234,7 +234,7 @@ tbody { animation: tbody-in 0.32s cubic-bezier(0.22, 1, 0.36, 1); }
   font-weight: 600; font-variant-numeric: tabular-nums; font-size: 13px;
 }
 .pill.active { background: var(--green-soft); color: var(--green); }
-.pill.idle { background: #f2f3f7; color: #a5abc0; }
+.pill.idle { background: var(--badge-bg); color: #a5abc0; }
 .pill.empty { background: transparent; font-weight: 400; }
 
 /* 在线状态徽章:Online now 用饱和绿 + 白字 + 呼吸点 + 外发光,整列里一眼最跳;
@@ -251,7 +251,7 @@ tbody { animation: tbody-in 0.32s cubic-bezier(0.22, 1, 0.36, 1); }
   box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.35), 0 2px 10px rgba(34, 197, 94, 0.45);
   animation: ob-breathe 2s ease-in-out infinite;
 }
-.obadge.off { color: var(--muted); background: #f2f3f7; }
+.obadge.off { color: var(--muted); background: var(--badge-bg); }
 .obadge.unk { color: #b8bdd0; font-weight: 400; }
 .ob-pulse {
   width: 6px; height: 6px; border-radius: 50%; flex: none;
